@@ -31,4 +31,4 @@ go run ./cmd/mapfhet
 
 ## References
 
-See `jova/jovina-unapredjenja/01-mapf-het/` for full problem formulation.
+See `docs/` for problem formulation and integration details.

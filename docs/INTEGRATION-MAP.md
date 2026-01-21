@@ -387,7 +387,7 @@ ek-kor2/renode/
 
 ## References
 
-- `jova/jovina-unapredjenja/01-mapf-het/` - Problem formulation
+- `docs/` - Problem formulation
 - `ek-kor2/IMPLEMENTATION-PLAN.md` - EK-KOR2 architecture
 - `simulator/README.md` - Go physics simulator
 - `tehnika/inzenjersko/en/16-jezgro.md` - JEZGRO RTOS spec
