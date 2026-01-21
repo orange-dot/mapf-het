@@ -535,6 +535,7 @@ func (m *MCTS) extractBestPlan(inst *core.Instance, root *MCTSNode, field *Poten
 		node = best
 	}
 
+	PopulateSchedule(sol, inst)
 	sol.ComputeMakespan(inst)
 	sol.Feasible = FindFirstConflict(sol.Paths) == nil
 

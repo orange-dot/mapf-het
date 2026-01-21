@@ -148,6 +148,11 @@ func (s *StochasticECBS) Solve(inst *core.Instance) *core.Solution {
 			// No nodes meet deadline criterion, relax and continue
 			// Take from open directly
 			node := heap.Pop(open).(*ecbsNode)
+			conflict := FindFirstConflict(node.solution.Paths)
+			if conflict == nil {
+				node.solution.Feasible = true
+				return node.solution
+			}
 			s.processNode(inst, node, open, taskDurations)
 			continue
 		}
@@ -191,9 +196,13 @@ func (s *StochasticECBS) processNode(inst *core.Instance, node *ecbsNode, open *
 			constraints: append(
 				append([]Constraint{}, node.constraints...),
 				Constraint{
-					Robot:  robotID,
-					Vertex: conflict.Vertex,
-					Time:   conflict.Time,
+					Robot:    robotID,
+					Vertex:   conflict.Vertex,
+					Time:     conflict.Time,
+					EndTime:  conflict.EndTime,
+					IsEdge:   conflict.IsEdge,
+					EdgeFrom: conflict.EdgeFrom,
+					EdgeTo:   conflict.EdgeTo,
 				},
 			),
 			solution: core.NewSolution(),
@@ -261,18 +270,28 @@ func (s *StochasticECBS) computeMakespanDistribution(inst *core.Instance, node *
 	robotCompletions := make([]LogNormalDist, 0, len(inst.Robots))
 
 	for _, robot := range inst.Robots {
-		// Travel time distribution (assume deterministic for now)
+		// Travel time distribution (assume deterministic for now).
+		// Path time already includes nominal task durations, so subtract them out.
 		path := node.solution.Paths[robot.ID]
 		var travelTime float64
 		if len(path) > 0 {
 			travelTime = path[len(path)-1].T
 		}
 
-		// Task duration distributions
+		// Task duration distributions and nominal sum
 		var taskDists []LogNormalDist
+		var nominalTaskSum float64
 		for tid, rid := range node.solution.Assignment {
 			if rid == robot.ID {
 				taskDists = append(taskDists, taskDurations[tid])
+				task := inst.TaskByID(tid)
+				if task != nil {
+					duration := task.Duration
+					if duration <= 0 {
+						duration, _ = core.NominalDuration(task.Type)
+					}
+					nominalTaskSum += duration
+				}
 			}
 		}
 
@@ -282,6 +301,12 @@ func (s *StochasticECBS) computeMakespanDistribution(inst *core.Instance, node *
 
 		// Sum of task durations
 		robotDuration := FentonWilkinson(taskDists)
+
+		// Subtract nominal task time to avoid double counting.
+		travelTime -= nominalTaskSum
+		if travelTime < 0 {
+			travelTime = 0
+		}
 
 		// Add travel time as shift
 		if travelTime > 0 {
@@ -319,14 +344,33 @@ func (s *StochasticECBS) sampleMakespan(inst *core.Instance, node *ecbsNode, tas
 	var maxCompletion float64
 
 	for _, robot := range inst.Robots {
-		// Travel time
+		// Travel time (path already includes nominal durations).
 		path := node.solution.Paths[robot.ID]
 		var completion float64
 		if len(path) > 0 {
 			completion = path[len(path)-1].T
 		}
 
-		// Sample task durations
+		var nominalTaskSum float64
+		for tid, rid := range node.solution.Assignment {
+			if rid == robot.ID {
+				task := inst.TaskByID(tid)
+				if task != nil {
+					duration := task.Duration
+					if duration <= 0 {
+						duration, _ = core.NominalDuration(task.Type)
+					}
+					nominalTaskSum += duration
+				}
+			}
+		}
+
+		// Remove nominal duration to avoid double counting, then add sampled durations.
+		completion -= nominalTaskSum
+		if completion < 0 {
+			completion = 0
+		}
+
 		for tid, rid := range node.solution.Assignment {
 			if rid == robot.ID {
 				dist := taskDurations[tid]
@@ -394,15 +438,8 @@ func (s *StochasticECBS) planAllPaths(inst *core.Instance, node *ecbsNode) bool 
 	node.solution.Schedule = make(core.Schedule)
 
 	for _, robot := range inst.Robots {
-		var goals []core.VertexID
-		for tid, rid := range node.solution.Assignment {
-			if rid == robot.ID {
-				task := inst.TaskByID(tid)
-				if task != nil {
-					goals = append(goals, task.Location)
-				}
-			}
-		}
+		// Collect goals with task info (includes duration) sorted by TaskID
+		goalsWithInfo := CollectGoalsWithInfo(node.solution.Assignment, robot.ID, inst)
 
 		var robotConstraints []Constraint
 		for _, con := range node.constraints {
@@ -411,22 +448,24 @@ func (s *StochasticECBS) planAllPaths(inst *core.Instance, node *ecbsNode) bool 
 			}
 		}
 
-		path := SpaceTimeAStar(
+		// Plan path with task durations (adds wait segments for service time)
+		path := SpaceTimeAStarWithDurations(
 			inst.Workspace,
 			robot,
 			robot.Start,
-			goals,
+			goalsWithInfo,
 			robotConstraints,
 			s.MaxTime,
 		)
 
-		if path == nil && len(goals) > 0 {
+		if path == nil && len(goalsWithInfo) > 0 {
 			return false
 		}
 
 		node.solution.Paths[robot.ID] = path
 	}
 
+	PopulateSchedule(node.solution, inst)
 	node.solution.ComputeMakespan(inst)
 	return true
 }

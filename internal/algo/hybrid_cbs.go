@@ -124,10 +124,13 @@ func (h *HybridCBS) cbsGlobalPlan(inst *core.Instance) *core.Solution {
 				constraints: append(
 					append([]Constraint{}, node.constraints...),
 					Constraint{
-						Robot:  robotID,
-						Vertex: conflict.Vertex,
-						Time:   conflict.Time,
-						IsEdge: conflict.IsEdge,
+						Robot:    robotID,
+						Vertex:   conflict.Vertex,
+						Time:     conflict.Time,
+						EndTime:  conflict.EndTime,
+						IsEdge:   conflict.IsEdge,
+						EdgeFrom: conflict.EdgeFrom,
+						EdgeTo:   conflict.EdgeTo,
 					},
 				),
 				solution: core.NewSolution(),
@@ -219,16 +222,8 @@ func (h *HybridCBS) planAllPaths(inst *core.Instance, node *hybridCBSNode, field
 	node.solution.Schedule = make(core.Schedule)
 
 	for _, robot := range inst.Robots {
-		// Collect tasks for this robot
-		var goals []core.VertexID
-		for tid, rid := range node.solution.Assignment {
-			if rid == robot.ID {
-				task := inst.TaskByID(tid)
-				if task != nil {
-					goals = append(goals, task.Location)
-				}
-			}
-		}
+		// Collect goals with task info (includes duration) sorted by TaskID
+		goalsWithInfo := CollectGoalsWithInfo(node.solution.Assignment, robot.ID, inst)
 
 		// Filter constraints
 		var robotConstraints []Constraint
@@ -238,28 +233,30 @@ func (h *HybridCBS) planAllPaths(inst *core.Instance, node *hybridCBSNode, field
 			}
 		}
 
-		// Plan with field-guided A*
-		path := h.fieldGuidedAStar(
+		// Plan with field-guided A* and task durations
+		path := h.fieldGuidedAStarWithDurations(
 			inst.Workspace,
 			robot,
 			robot.Start,
-			goals,
+			goalsWithInfo,
 			robotConstraints,
 			field,
 		)
 
-		if path == nil && len(goals) > 0 {
+		if path == nil && len(goalsWithInfo) > 0 {
 			return false
 		}
 
 		node.solution.Paths[robot.ID] = path
 	}
 
+	PopulateSchedule(node.solution, inst)
 	node.solution.ComputeMakespan(inst)
 	return true
 }
 
 // fieldGuidedAStar implements A* with potential field heuristic.
+// Uses sequential chaining to visit all goals.
 func (h *HybridCBS) fieldGuidedAStar(
 	ws *core.Workspace,
 	robot *core.Robot,
@@ -272,8 +269,105 @@ func (h *HybridCBS) fieldGuidedAStar(
 		return nil
 	}
 
-	goal := goals[0]
+	var fullPath core.Path
+	currentStart := start
+	currentTime := 0.0
 
+	for i, goal := range goals {
+		segment := h.fieldGuidedAStarSingle(ws, robot, currentStart, goal, constraints, field, currentTime)
+		if segment == nil {
+			return nil // Failed to reach this goal
+		}
+
+		if i == 0 {
+			fullPath = append(fullPath, segment...)
+		} else {
+			// Skip duplicate vertex at junction
+			fullPath = append(fullPath, segment[1:]...)
+		}
+
+		currentStart = goal
+		currentTime = segment[len(segment)-1].T
+	}
+
+	return fullPath
+}
+
+// fieldGuidedAStarWithDurations implements field-guided A* with task duration wait segments.
+func (h *HybridCBS) fieldGuidedAStarWithDurations(
+	ws *core.Workspace,
+	robot *core.Robot,
+	start core.VertexID,
+	goalsWithInfo []GoalWithTaskInfo,
+	constraints []Constraint,
+	field *PotentialField,
+) core.Path {
+	if len(goalsWithInfo) == 0 {
+		return nil
+	}
+
+	var fullPath core.Path
+	currentStart := start
+	currentTime := 0.0
+
+	for i, goalInfo := range goalsWithInfo {
+		segment := h.fieldGuidedAStarSingle(ws, robot, currentStart, goalInfo.Vertex, constraints, field, currentTime)
+		if segment == nil {
+			return nil // Failed to reach this goal
+		}
+
+		if i == 0 {
+			fullPath = append(fullPath, segment...)
+		} else {
+			// Skip duplicate vertex at junction
+			fullPath = append(fullPath, segment[1:]...)
+		}
+
+		arrivalTime := segment[len(segment)-1].T
+
+		// Add wait segment for task duration (service time)
+		if goalInfo.Duration > 0 {
+			completionTime := arrivalTime + goalInfo.Duration
+			// Check if wait interval violates any vertex constraints.
+			for _, c := range constraints {
+				if c.Robot != robot.ID || c.IsEdge {
+					continue
+				}
+				if c.Vertex == goalInfo.Vertex {
+					constraintEnd := c.EndTime
+					if constraintEnd <= c.Time {
+						constraintEnd = c.Time + TimeTolerance
+					}
+					if arrivalTime < constraintEnd+TimeTolerance && c.Time < completionTime+TimeTolerance {
+						return nil
+					}
+				}
+			}
+			fullPath = append(fullPath, core.TimedVertex{
+				V: goalInfo.Vertex,
+				T: completionTime,
+			})
+			currentTime = completionTime
+		} else {
+			currentTime = arrivalTime
+		}
+
+		currentStart = goalInfo.Vertex
+	}
+
+	return fullPath
+}
+
+// fieldGuidedAStarSingle implements A* with potential field heuristic for a single goal.
+func (h *HybridCBS) fieldGuidedAStarSingle(
+	ws *core.Workspace,
+	robot *core.Robot,
+	start core.VertexID,
+	goal core.VertexID,
+	constraints []Constraint,
+	field *PotentialField,
+	startTime float64,
+) core.Path {
 	// Field-aware heuristic
 	heuristic := func(v core.VertexID) float64 {
 		vPos := ws.Vertices[v].Pos
@@ -286,11 +380,41 @@ func (h *HybridCBS) fieldGuidedAStar(
 		return distance - fieldContrib
 	}
 
-	// Constraint check
-	violates := func(v core.VertexID, t float64) bool {
+	// Check if state violates constraints (vertex and edge)
+	// For edge constraints, check interval overlap: movement [tStart, tEnd] vs constraint [c.Time, c.EndTime]
+	violates := func(fromV, toV core.VertexID, tStart, tEnd float64) bool {
 		for _, c := range constraints {
-			if c.Robot == robot.ID && c.Vertex == v && timeEqual(c.Time, t) {
-				return true
+			if c.Robot != robot.ID {
+				continue
+			}
+			// Vertex constraint: robot cannot be at vertex at specific time or interval.
+			if !c.IsEdge && c.Vertex == toV {
+				constraintEnd := c.EndTime
+				if constraintEnd <= c.Time {
+					constraintEnd = c.Time
+				}
+				if fromV == toV {
+					// Waiting: check interval overlap
+					if tStart < constraintEnd+TimeTolerance && c.Time < tEnd+TimeTolerance {
+						return true
+					}
+				} else if timeEqual(c.Time, tEnd) {
+					// Moving: only occupy target at arrival
+					return true
+				}
+			}
+			// Edge constraint (swap conflict): check interval overlap
+			if c.IsEdge && c.EdgeFrom == fromV && c.EdgeTo == toV {
+				// Use EndTime if set, otherwise fall back to Time
+				constraintEnd := c.EndTime
+				if constraintEnd <= c.Time {
+					constraintEnd = c.Time + TimeTolerance
+				}
+				// Intervals [tStart, tEnd] and [c.Time, constraintEnd] overlap if:
+				// tStart < constraintEnd AND c.Time < tEnd
+				if tStart < constraintEnd+TimeTolerance && c.Time < tEnd+TimeTolerance {
+					return true
+				}
 			}
 		}
 		return false
@@ -301,7 +425,7 @@ func (h *HybridCBS) fieldGuidedAStar(
 	heap.Init(open)
 
 	startNode := &fieldAStarNode{
-		state: SpaceTimeState{V: start, T: 0},
+		state: SpaceTimeState{V: start, T: startTime},
 		g:     0,
 		f:     heuristic(start),
 	}
@@ -325,16 +449,16 @@ func (h *HybridCBS) fieldGuidedAStar(
 			continue
 		}
 
-		nextT := current.state.T + 1.0
-
 		// Wait action
-		if !violates(current.state.V, nextT) {
-			waitState := SpaceTimeState{V: current.state.V, T: nextT}
+		waitDuration := 1.0
+		waitT := current.state.T + waitDuration
+		if !violates(current.state.V, current.state.V, current.state.T, waitT) {
+			waitState := SpaceTimeState{V: current.state.V, T: waitT}
 			if !visited[waitState] {
 				node := &fieldAStarNode{
 					state:  waitState,
-					g:      current.g + 0.1,
-					f:      current.g + 0.1 + heuristic(current.state.V),
+					g:      current.g + waitDuration,
+					f:      current.g + waitDuration + heuristic(current.state.V),
 					parent: current,
 				}
 				heap.Push(open, node)
@@ -346,7 +470,16 @@ func (h *HybridCBS) fieldGuidedAStar(
 			if !ws.CanOccupy(neighbor, robot.Type) {
 				continue
 			}
-			if violates(neighbor, nextT) {
+
+			// Get edge and calculate travel time
+			edge := ws.GetEdge(current.state.V, neighbor)
+			if edge == nil {
+				continue
+			}
+			travelTime := edge.TravelTime(robot)
+			nextT := current.state.T + travelTime
+
+			if violates(current.state.V, neighbor, current.state.T, nextT) {
 				continue
 			}
 
@@ -355,17 +488,9 @@ func (h *HybridCBS) fieldGuidedAStar(
 				continue
 			}
 
-			edgeCost := 1.0
-			for _, e := range ws.Edges[current.state.V] {
-				if e.To == neighbor {
-					edgeCost = e.Cost
-					break
-				}
-			}
-
-			// Apply field influence to edge cost
+			// Apply field influence to time cost
 			fieldBonus := h.FieldWeight * (field.LoadGradient[neighbor] - field.RepulsiveField[neighbor])
-			adjustedCost := edgeCost - fieldBonus*0.1
+			adjustedCost := travelTime - fieldBonus*0.1
 
 			if adjustedCost < 0.1 {
 				adjustedCost = 0.1

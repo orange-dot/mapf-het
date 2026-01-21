@@ -90,6 +90,16 @@ func (r *Robot) EnergyForDistance(dist float64, action MoveAction) float64 {
 	return power * travelTime / 3600.0 // Convert Ws to Wh
 }
 
+// EnergyForTime calculates energy needed for a time-based action (like hovering).
+// Takes time in seconds, returns energy in Wh.
+func (r *Robot) EnergyForTime(seconds float64, action MoveAction) float64 {
+	if r.Type != TypeC {
+		return 0
+	}
+	power := r.EnergyConsumption(action) // Watts
+	return power * seconds / 3600.0      // Convert Ws to Wh
+}
+
 // EnergyForLayerChange returns energy needed to change altitude layers.
 // Returns energy in Wh.
 func (r *Robot) EnergyForLayerChange(from, to AirspaceLayer) float64 {

@@ -12,7 +12,7 @@ type TimedVertex struct {
 // Path is a sequence of timed positions.
 type Path []TimedVertex
 
-// Schedule maps tasks to start times.
+// Schedule maps tasks to completion times (arrival + task duration).
 type Schedule map[TaskID]float64
 
 // Solution represents a complete MAPF-HET solution.
@@ -36,16 +36,13 @@ func NewSolution() *Solution {
 }
 
 // ComputeMakespan calculates max completion time.
+// Note: Schedule stores completion times (arrival + duration), not start times.
 func (s *Solution) ComputeMakespan(inst *Instance) float64 {
 	maxC := 0.0
-	for tid, start := range s.Schedule {
-		task := inst.TaskByID(tid)
-		if task == nil {
-			continue
-		}
-		completion := start + task.Duration
-		if completion > maxC {
-			maxC = completion
+	for _, completionTime := range s.Schedule {
+		// Schedule already contains completion times (set by PopulateSchedule)
+		if completionTime > maxC {
+			maxC = completionTime
 		}
 	}
 	s.Makespan = maxC

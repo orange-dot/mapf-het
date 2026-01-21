@@ -42,9 +42,52 @@ type Vertex struct {
 }
 
 // Edge connects two vertices.
+// Semantics:
+//   - LengthMeters: physical distance in meters (required)
+//   - TravelTimeSec: optional fixed traversal time in seconds (for elevators, rails, etc.)
+//     If TravelTimeSec > 0, it is authoritative and robot speed is ignored.
+//     If TravelTimeSec == 0, travel time = LengthMeters / robot.Speed().
 type Edge struct {
-	From, To VertexID
-	Cost     float64 // Travel time
+	From, To      VertexID
+	LengthMeters  float64 // Physical distance in meters
+	TravelTimeSec float64 // Fixed travel time (0 = use length/speed)
+
+	// Deprecated: use LengthMeters. Kept for backward compatibility.
+	Cost float64
+}
+
+// TravelTime returns the traversal time for this edge given a robot.
+// Priority: TravelTimeSec > LengthMeters/Speed > Cost (legacy fallback).
+func (e Edge) TravelTime(robot *Robot) float64 {
+	// Priority 1: explicit fixed time
+	if e.TravelTimeSec > 0 {
+		return e.TravelTimeSec
+	}
+
+	// Priority 2: length-based calculation
+	if e.LengthMeters > 0 && robot != nil && robot.Speed() > 0 {
+		return e.LengthMeters / robot.Speed()
+	}
+
+	// Fallback: legacy Cost field (treat as distance, divide by speed)
+	if e.Cost > 0 && robot != nil && robot.Speed() > 0 {
+		return e.Cost / robot.Speed()
+	}
+
+	// Default: 1 second if nothing else
+	return 1.0
+}
+
+// Distance returns the physical distance for this edge.
+// Priority: LengthMeters > Cost (legacy) > 0.
+func (e Edge) Distance() float64 {
+	if e.LengthMeters > 0 {
+		return e.LengthMeters
+	}
+	if e.Cost > 0 {
+		return e.Cost
+	}
+	return 0
 }
 
 // Workspace represents the traversable space.
@@ -69,10 +112,33 @@ func (w *Workspace) AddVertex(v *Vertex) {
 	}
 }
 
-// AddEdge adds a bidirectional edge.
+// AddEdge adds a bidirectional edge (legacy: cost treated as distance in meters).
 func (w *Workspace) AddEdge(from, to VertexID, cost float64) {
-	w.Edges[from] = append(w.Edges[from], Edge{From: from, To: to, Cost: cost})
-	w.Edges[to] = append(w.Edges[to], Edge{From: to, To: from, Cost: cost})
+	// Set both Cost (legacy) and LengthMeters for backward compatibility
+	w.Edges[from] = append(w.Edges[from], Edge{From: from, To: to, Cost: cost, LengthMeters: cost})
+	w.Edges[to] = append(w.Edges[to], Edge{From: to, To: from, Cost: cost, LengthMeters: cost})
+}
+
+// AddEdgeWithLength adds a bidirectional edge with explicit length.
+func (w *Workspace) AddEdgeWithLength(from, to VertexID, lengthMeters float64) {
+	w.Edges[from] = append(w.Edges[from], Edge{From: from, To: to, LengthMeters: lengthMeters})
+	w.Edges[to] = append(w.Edges[to], Edge{From: to, To: from, LengthMeters: lengthMeters})
+}
+
+// AddEdgeWithFixedTime adds a bidirectional edge with fixed traversal time (e.g., elevator).
+func (w *Workspace) AddEdgeWithFixedTime(from, to VertexID, lengthMeters, travelTimeSec float64) {
+	w.Edges[from] = append(w.Edges[from], Edge{From: from, To: to, LengthMeters: lengthMeters, TravelTimeSec: travelTimeSec})
+	w.Edges[to] = append(w.Edges[to], Edge{From: to, To: from, LengthMeters: lengthMeters, TravelTimeSec: travelTimeSec})
+}
+
+// GetEdge returns the edge between two vertices, or nil if none exists.
+func (w *Workspace) GetEdge(from, to VertexID) *Edge {
+	for i := range w.Edges[from] {
+		if w.Edges[from][i].To == to {
+			return &w.Edges[from][i]
+		}
+	}
+	return nil
 }
 
 // Neighbors returns adjacent vertices.

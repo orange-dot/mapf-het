@@ -45,7 +45,8 @@ func (h *astarHeap) Pop() any {
 	return x
 }
 
-// SpaceTimeAStar finds shortest path avoiding constraints.
+// SpaceTimeAStar finds shortest path through all goals avoiding constraints.
+// Uses sequential chaining: finds path to goals[0], then from goals[0] to goals[1], etc.
 func SpaceTimeAStar(
 	ws *core.Workspace,
 	robot *core.Robot,
@@ -58,9 +59,119 @@ func SpaceTimeAStar(
 		return nil
 	}
 
-	// For now: single goal A*
-	goal := goals[0]
+	var fullPath core.Path
+	currentStart := start
+	currentTime := 0.0
 
+	for i, goal := range goals {
+		segment := spaceTimeAStarSingle(ws, robot, currentStart, goal, constraints, maxTime, currentTime)
+		if segment == nil {
+			return nil // Failed to reach this goal
+		}
+
+		if i == 0 {
+			fullPath = append(fullPath, segment...)
+		} else {
+			// Skip duplicate vertex at junction (end of previous = start of next)
+			fullPath = append(fullPath, segment[1:]...)
+		}
+
+		currentStart = goal
+		currentTime = segment[len(segment)-1].T
+	}
+
+	return fullPath
+}
+
+// SpaceTimeAStarWithDurations finds path through goals, adding wait segments for task durations.
+// This version uses task durations to add service time at each goal.
+// Wait intervals are checked against vertex constraints to ensure feasibility.
+func SpaceTimeAStarWithDurations(
+	ws *core.Workspace,
+	robot *core.Robot,
+	start core.VertexID,
+	goalsWithInfo []GoalWithTaskInfo,
+	constraints []Constraint,
+	maxTime float64,
+) core.Path {
+	if len(goalsWithInfo) == 0 {
+		return nil
+	}
+
+	var fullPath core.Path
+	currentStart := start
+	currentTime := 0.0
+
+	for i, goalInfo := range goalsWithInfo {
+		segment := spaceTimeAStarSingle(ws, robot, currentStart, goalInfo.Vertex, constraints, maxTime, currentTime)
+		if segment == nil {
+			return nil // Failed to reach this goal
+		}
+
+		if i == 0 {
+			fullPath = append(fullPath, segment...)
+		} else {
+			// Skip duplicate vertex at junction
+			fullPath = append(fullPath, segment[1:]...)
+		}
+
+		arrivalTime := segment[len(segment)-1].T
+
+		// Add wait segment for task duration (service time)
+		if goalInfo.Duration > 0 {
+			completionTime := arrivalTime + goalInfo.Duration
+
+			// Check if wait interval violates any vertex constraints
+			waitViolated := false
+			for _, c := range constraints {
+				if c.Robot != robot.ID || c.IsEdge {
+					continue
+				}
+				// Vertex constraint: check if constraint time falls within wait interval [arrival, completion]
+				if c.Vertex == goalInfo.Vertex {
+					// Use EndTime for interval constraints, otherwise treat as point constraint
+					constraintEnd := c.EndTime
+					if constraintEnd <= c.Time {
+						constraintEnd = c.Time + TimeTolerance
+					}
+					// Wait interval [arrivalTime, completionTime] overlaps constraint [c.Time, constraintEnd]
+					if arrivalTime < constraintEnd+TimeTolerance && c.Time < completionTime+TimeTolerance {
+						waitViolated = true
+						break
+					}
+				}
+			}
+
+			if waitViolated {
+				return nil // Cannot complete task due to constraint during service time
+			}
+
+			// Only add wait vertex if duration > 0
+			fullPath = append(fullPath, core.TimedVertex{
+				V: goalInfo.Vertex,
+				T: completionTime,
+			})
+			currentTime = completionTime
+		} else {
+			currentTime = arrivalTime
+		}
+
+		currentStart = goalInfo.Vertex
+	}
+
+	return fullPath
+}
+
+// spaceTimeAStarSingle finds shortest path to a single goal.
+func spaceTimeAStarSingle(
+	ws *core.Workspace,
+	robot *core.Robot,
+	start core.VertexID,
+	goal core.VertexID,
+	constraints []Constraint,
+	maxTime float64,
+	startTime float64,
+) core.Path {
 	// Heuristic: Manhattan distance (placeholder)
 	heuristic := func(v core.VertexID) float64 {
 		// TODO: Proper heuristic using workspace positions
@@ -70,11 +181,42 @@ func SpaceTimeAStar(
 		return 1.0
 	}
 
-	// Check if state violates constraints
-	violates := func(v core.VertexID, t float64) bool {
+	// Check if state violates constraints (vertex and edge)
+	// For edge constraints, check interval overlap: movement [tStart, tEnd] vs constraint [c.Time, c.EndTime]
+	violates := func(fromV, toV core.VertexID, tStart, tEnd float64) bool {
 		for _, c := range constraints {
-			if c.Robot == robot.ID && c.Vertex == v && c.Time == t {
-				return true
+			if c.Robot != robot.ID {
+				continue
+			}
+			// Vertex constraint: robot cannot be at vertex at specific time or interval.
+			if !c.IsEdge && c.Vertex == toV {
+				constraintEnd := c.EndTime
+				if constraintEnd <= c.Time {
+					constraintEnd = c.Time
+				}
+				if fromV == toV {
+					// Waiting: check interval overlap
+					if tStart < constraintEnd+TimeTolerance && c.Time < tEnd+TimeTolerance {
+						return true
+					}
+				} else if timeEqual(c.Time, tEnd) {
+					// Moving: only occupy target at arrival
+					return true
+				}
+			}
+			// Edge constraint (swap conflict): cannot traverse edge during time interval
+			// Movement interval [tStart, tEnd] overlaps with constraint interval [c.Time, c.EndTime]
+			if c.IsEdge && c.EdgeFrom == fromV && c.EdgeTo == toV {
+				// Use EndTime if set, otherwise fall back to Time
+				constraintEnd := c.EndTime
+				if constraintEnd <= c.Time {
+					constraintEnd = c.Time + TimeTolerance
+				}
+				// Intervals [tStart, tEnd] and [c.Time, constraintEnd] overlap if:
+				// tStart < constraintEnd AND c.Time < tEnd
+				if tStart < constraintEnd+TimeTolerance && c.Time < tEnd+TimeTolerance {
+					return true
+				}
 			}
 		}
 		return false
@@ -84,7 +226,7 @@ func SpaceTimeAStar(
 	heap.Init(open)
 
 	startNode := &astarNode{
-		state: SpaceTimeState{V: start, T: 0},
+		state: SpaceTimeState{V: start, T: startTime},
 		g:     0,
 		f:     heuristic(start),
 	}
@@ -110,16 +252,17 @@ func SpaceTimeAStar(
 		}
 
 		// Expand neighbors
-		nextT := current.state.T + 1.0 // Unit time step
-
-		// Wait action
-		if !violates(current.state.V, nextT) {
-			waitState := SpaceTimeState{V: current.state.V, T: nextT}
+		// Wait action - use time-based cost for consistency with move actions
+		waitDuration := 1.0 // Default wait duration in seconds
+		waitT := current.state.T + waitDuration
+		if !violates(current.state.V, current.state.V, current.state.T, waitT) {
+			waitState := SpaceTimeState{V: current.state.V, T: waitT}
 			if !visited[waitState] {
+				// Use wait duration as cost to keep g-cost time-based
 				node := &astarNode{
 					state:  waitState,
-					g:      current.g + 0.1, // Small cost for waiting
-					f:      current.g + 0.1 + heuristic(current.state.V),
+					g:      current.g + waitDuration,
+					f:      current.g + waitDuration + heuristic(current.state.V),
 					parent: current,
 				}
 				heap.Push(open, node)
@@ -131,22 +274,25 @@ func SpaceTimeAStar(
 			if !ws.CanOccupy(neighbor, robot.Type) {
 				continue
 			}
-			if violates(neighbor, nextT) {
+
+			// Get edge and calculate travel time
+			edge := ws.GetEdge(current.state.V, neighbor)
+			if edge == nil {
+				continue
+			}
+			travelTime := edge.TravelTime(robot)
+			nextT := current.state.T + travelTime
+			// Use travel time for g-cost to optimize makespan, not distance.
+			// This ensures fixed-time edges (elevators, rails) are costed correctly.
+			edgeCost := travelTime
+
+			if violates(current.state.V, neighbor, current.state.T, nextT) {
 				continue
 			}
 
 			moveState := SpaceTimeState{V: neighbor, T: nextT}
 			if visited[moveState] {
 				continue
-			}
-
-			// Get edge cost
-			edgeCost := 1.0
-			for _, e := range ws.Edges[current.state.V] {
-				if e.To == neighbor {
-					edgeCost = e.Cost
-					break
-				}
 			}
 
 			node := &astarNode{

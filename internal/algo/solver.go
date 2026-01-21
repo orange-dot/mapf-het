@@ -22,8 +22,9 @@ type Solver interface {
 type Conflict struct {
 	Robot1, Robot2 core.RobotID
 	Vertex         core.VertexID
-	Time           float64
-	IsEdge         bool // Edge conflict vs vertex conflict
+	Time           float64 // Start time of conflict
+	EndTime        float64 // End time of conflict (when movement completes)
+	IsEdge         bool    // Edge conflict vs vertex conflict
 	// For edge conflicts: the two vertices being swapped
 	EdgeFrom, EdgeTo core.VertexID
 }
@@ -32,7 +33,8 @@ type Conflict struct {
 type Constraint struct {
 	Robot  core.RobotID
 	Vertex core.VertexID
-	Time   float64
+	Time   float64   // Start time of constraint
+	EndTime float64  // End time of constraint (for edge constraints with duration)
 	// For edge constraints
 	IsEdge   bool
 	EdgeFrom core.VertexID
@@ -47,6 +49,36 @@ func timeEqual(t1, t2 float64) bool {
 	return math.Abs(t1-t2) < TimeTolerance
 }
 
+type pathSegment struct {
+	fromV  core.VertexID
+	toV    core.VertexID
+	startT float64
+	endT   float64
+}
+
+func buildSegments(path core.Path) []pathSegment {
+	if len(path) < 2 {
+		return nil
+	}
+
+	segs := make([]pathSegment, 0, len(path)-1)
+	for i := 0; i < len(path)-1; i++ {
+		seg := pathSegment{
+			fromV:  path[i].V,
+			toV:    path[i+1].V,
+			startT: path[i].T,
+			endT:   path[i+1].T,
+		}
+		if seg.endT < seg.startT {
+			seg.startT, seg.endT = seg.endT, seg.startT
+			seg.fromV, seg.toV = seg.toV, seg.fromV
+		}
+		segs = append(segs, seg)
+	}
+
+	return segs
+}
+
 // sortedRobotIDs returns sorted robot IDs from paths map.
 func sortedRobotIDs(paths map[core.RobotID]core.Path) []core.RobotID {
 	robots := make([]core.RobotID, 0, len(paths))
@@ -57,6 +89,55 @@ func sortedRobotIDs(paths map[core.RobotID]core.Path) []core.RobotID {
 		return robots[i] < robots[j]
 	})
 	return robots
+}
+
+// GoalWithTaskInfo pairs a goal vertex with task metadata for planning.
+type GoalWithTaskInfo struct {
+	TaskID   core.TaskID
+	Vertex   core.VertexID
+	Duration float64 // Task service time in seconds
+}
+
+// CollectGoalsDeterministic returns goals sorted by TaskID for deterministic planning.
+// This ensures reproducible path planning regardless of map iteration order.
+func CollectGoalsDeterministic(assignment core.Assignment, robotID core.RobotID, inst *core.Instance) []core.VertexID {
+	goalsWithInfo := CollectGoalsWithInfo(assignment, robotID, inst)
+	goals := make([]core.VertexID, len(goalsWithInfo))
+	for i, g := range goalsWithInfo {
+		goals[i] = g.Vertex
+	}
+	return goals
+}
+
+// CollectGoalsWithInfo returns goals with task metadata, sorted by TaskID.
+// Use this when you need task durations for wait segments.
+func CollectGoalsWithInfo(assignment core.Assignment, robotID core.RobotID, inst *core.Instance) []GoalWithTaskInfo {
+	var goalsWithInfo []GoalWithTaskInfo
+
+	for tid, rid := range assignment {
+		if rid == robotID {
+			task := inst.TaskByID(tid)
+			if task != nil {
+				duration := task.Duration
+				if duration <= 0 {
+					// Use nominal duration if not set
+					duration, _ = core.NominalDuration(task.Type)
+				}
+				goalsWithInfo = append(goalsWithInfo, GoalWithTaskInfo{
+					TaskID:   tid,
+					Vertex:   task.Location,
+					Duration: duration,
+				})
+			}
+		}
+	}
+
+	// Sort by TaskID for deterministic order
+	sort.Slice(goalsWithInfo, func(i, j int) bool {
+		return goalsWithInfo[i].TaskID < goalsWithInfo[j].TaskID
+	})
+
+	return goalsWithInfo
 }
 
 // getPositionAtTime returns robot position at given time via interpolation.
@@ -108,6 +189,8 @@ func FindFirstConflict(paths map[core.RobotID]core.Path) *Conflict {
 	sort.Float64s(times)
 
 	// Check for vertex conflicts at each time point
+	var bestVertex *Conflict
+vertexLoop:
 	for _, t := range times {
 		for i := 0; i < len(robots); i++ {
 			for j := i + 1; j < len(robots); j++ {
@@ -117,42 +200,57 @@ func FindFirstConflict(paths map[core.RobotID]core.Path) *Conflict {
 				pos2, ok2 := getPositionAtTime(path2, t)
 
 				if ok1 && ok2 && pos1 == pos2 {
-					return &Conflict{
-						Robot1: robots[i],
-						Robot2: robots[j],
-						Vertex: pos1,
-						Time:   t,
-						IsEdge: false,
+					bestVertex = &Conflict{
+						Robot1:  robots[i],
+						Robot2:  robots[j],
+						Vertex:  pos1,
+						Time:    t,
+						EndTime: t, // Vertex conflict is a point in time
+						IsEdge:  false,
 					}
+					break vertexLoop
 				}
 			}
 		}
 	}
 
-	// Check for edge conflicts (swaps) between consecutive time points
-	for ti := 0; ti < len(times)-1; ti++ {
-		t1, t2 := times[ti], times[ti+1]
+	// Check for edge conflicts (swaps) using interval overlap detection.
+	// With non-uniform travel times, robots may traverse the same edge in opposite
+	// directions at overlapping time intervals even if not aligned on time points.
+	var bestEdge *Conflict
+	bestTime := math.Inf(1)
 
-		for i := 0; i < len(robots); i++ {
-			for j := i + 1; j < len(robots); j++ {
-				path1, path2 := paths[robots[i]], paths[robots[j]]
+	for i := 0; i < len(robots); i++ {
+		for j := i + 1; j < len(robots); j++ {
+			path1, path2 := paths[robots[i]], paths[robots[j]]
+			segs1 := buildSegments(path1)
+			segs2 := buildSegments(path2)
 
-				pos1Start, ok1s := getPositionAtTime(path1, t1)
-				pos1End, ok1e := getPositionAtTime(path1, t2)
-				pos2Start, ok2s := getPositionAtTime(path2, t1)
-				pos2End, ok2e := getPositionAtTime(path2, t2)
+			for _, s1 := range segs1 {
+				if s1.fromV == s1.toV {
+					continue
+				}
+				for _, s2 := range segs2 {
+					if s2.fromV == s2.toV {
+						continue
+					}
 
-				if ok1s && ok1e && ok2s && ok2e {
-					// Check if robots swap positions
-					if pos1Start == pos2End && pos1End == pos2Start && pos1Start != pos1End {
-						return &Conflict{
-							Robot1:   robots[i],
-							Robot2:   robots[j],
-							Vertex:   pos1Start,
-							Time:     t1,
-							IsEdge:   true,
-							EdgeFrom: pos1Start,
-							EdgeTo:   pos1End,
+					// Swap conflict: opposite directions on same edge.
+					if s1.fromV == s2.toV && s1.toV == s2.fromV {
+						overlapStart := math.Max(s1.startT, s2.startT)
+						overlapEnd := math.Min(s1.endT, s2.endT)
+						if overlapStart < overlapEnd+TimeTolerance && overlapStart < bestTime {
+							bestTime = overlapStart
+							bestEdge = &Conflict{
+								Robot1:   robots[i],
+								Robot2:   robots[j],
+								Vertex:   s1.fromV,
+								Time:     overlapStart,
+								EndTime:  overlapEnd,
+								IsEdge:   true,
+								EdgeFrom: s1.fromV,
+								EdgeTo:   s1.toV,
+							}
 						}
 					}
 				}
@@ -160,7 +258,53 @@ func FindFirstConflict(paths map[core.RobotID]core.Path) *Conflict {
 		}
 	}
 
+	if bestEdge != nil {
+		if bestVertex == nil || bestEdge.Time+TimeTolerance < bestVertex.Time {
+			return bestEdge
+		}
+	}
+
+	if bestVertex != nil {
+		return bestVertex
+	}
+
 	return nil
+}
+
+// PopulateSchedule fills the Schedule map with task completion times.
+// Completion time = arrival time + task duration.
+// Must be called before ComputeMakespan for accurate results.
+func PopulateSchedule(sol *core.Solution, inst *core.Instance) {
+	if sol.Schedule == nil {
+		sol.Schedule = make(core.Schedule)
+	}
+
+	for tid, rid := range sol.Assignment {
+		task := inst.TaskByID(tid)
+		if task == nil {
+			continue
+		}
+		path := sol.Paths[rid]
+		if path == nil {
+			continue
+		}
+
+		// Get task duration
+		duration := task.Duration
+		if duration <= 0 {
+			duration, _ = core.NominalDuration(task.Type)
+		}
+
+		// Find when robot reaches the task location
+		// The schedule records completion time (arrival + duration)
+		for _, tv := range path {
+			if tv.V == task.Location {
+				completionTime := tv.T + duration
+				sol.Schedule[tid] = completionTime
+				break
+			}
+		}
+	}
 }
 
 // FindAllConflicts detects all conflicts in paths.
@@ -193,41 +337,48 @@ func FindAllConflicts(paths map[core.RobotID]core.Path) []*Conflict {
 
 				if ok1 && ok2 && pos1 == pos2 {
 					conflicts = append(conflicts, &Conflict{
-						Robot1: robots[i],
-						Robot2: robots[j],
-						Vertex: pos1,
-						Time:   t,
-						IsEdge: false,
+						Robot1:  robots[i],
+						Robot2:  robots[j],
+						Vertex:  pos1,
+						Time:    t,
+						EndTime: t,
+						IsEdge:  false,
 					})
 				}
 			}
 		}
 	}
 
-	// Check for edge conflicts
-	for ti := 0; ti < len(times)-1; ti++ {
-		t1, t2 := times[ti], times[ti+1]
+	// Check for edge conflicts using interval overlap detection
+	for i := 0; i < len(robots); i++ {
+		for j := i + 1; j < len(robots); j++ {
+			path1, path2 := paths[robots[i]], paths[robots[j]]
+			segs1 := buildSegments(path1)
+			segs2 := buildSegments(path2)
 
-		for i := 0; i < len(robots); i++ {
-			for j := i + 1; j < len(robots); j++ {
-				path1, path2 := paths[robots[i]], paths[robots[j]]
-
-				pos1Start, ok1s := getPositionAtTime(path1, t1)
-				pos1End, ok1e := getPositionAtTime(path1, t2)
-				pos2Start, ok2s := getPositionAtTime(path2, t1)
-				pos2End, ok2e := getPositionAtTime(path2, t2)
-
-				if ok1s && ok1e && ok2s && ok2e {
-					if pos1Start == pos2End && pos1End == pos2Start && pos1Start != pos1End {
-						conflicts = append(conflicts, &Conflict{
-							Robot1:   robots[i],
-							Robot2:   robots[j],
-							Vertex:   pos1Start,
-							Time:     t1,
-							IsEdge:   true,
-							EdgeFrom: pos1Start,
-							EdgeTo:   pos1End,
-						})
+			for _, s1 := range segs1 {
+				if s1.fromV == s1.toV {
+					continue
+				}
+				for _, s2 := range segs2 {
+					if s2.fromV == s2.toV {
+						continue
+					}
+					if s1.fromV == s2.toV && s1.toV == s2.fromV {
+						overlapStart := math.Max(s1.startT, s2.startT)
+						overlapEnd := math.Min(s1.endT, s2.endT)
+						if overlapStart < overlapEnd+TimeTolerance {
+							conflicts = append(conflicts, &Conflict{
+								Robot1:   robots[i],
+								Robot2:   robots[j],
+								Vertex:   s1.fromV,
+								Time:     overlapStart,
+								EndTime:  overlapEnd,
+								IsEdge:   true,
+								EdgeFrom: s1.fromV,
+								EdgeTo:   s1.toV,
+							})
+						}
 					}
 				}
 			}

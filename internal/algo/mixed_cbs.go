@@ -319,9 +319,13 @@ func (m *MixedCBS) resolveLinearConflict(inst *core.Instance, node *mixedCBSNode
 	// and also cannot be there shortly before (blocking)
 	for dt := 0.0; dt <= 2.0; dt += 1.0 {
 		child1.constraints = append(child1.constraints, Constraint{
-			Robot:  c.Robot2,
-			Vertex: c.Vertex,
-			Time:   c.Time + dt,
+			Robot:    c.Robot2,
+			Vertex:   c.Vertex,
+			Time:     c.Time + dt,
+			EndTime:  c.EndTime + dt,
+			IsEdge:   c.IsEdge,
+			EdgeFrom: c.EdgeFrom,
+			EdgeTo:   c.EdgeTo,
 		})
 	}
 	children = append(children, child1)
@@ -335,9 +339,13 @@ func (m *MixedCBS) resolveLinearConflict(inst *core.Instance, node *mixedCBSNode
 
 	for dt := 0.0; dt <= 2.0; dt += 1.0 {
 		child2.constraints = append(child2.constraints, Constraint{
-			Robot:  c.Robot1,
-			Vertex: c.Vertex,
-			Time:   c.Time + dt,
+			Robot:    c.Robot1,
+			Vertex:   c.Vertex,
+			Time:     c.Time + dt,
+			EndTime:  c.EndTime + dt,
+			IsEdge:   c.IsEdge,
+			EdgeFrom: c.EdgeFrom,
+			EdgeTo:   c.EdgeTo,
 		})
 	}
 	children = append(children, child2)
@@ -355,9 +363,13 @@ func (m *MixedCBS) resolvePlanarConflict(node *mixedCBSNode, c *MixedConflict) [
 			constraints: append(
 				append([]Constraint{}, node.constraints...),
 				Constraint{
-					Robot:  robotID,
-					Vertex: c.Vertex,
-					Time:   c.Time,
+					Robot:    robotID,
+					Vertex:   c.Vertex,
+					Time:     c.Time,
+					EndTime:  c.EndTime,
+					IsEdge:   c.IsEdge,
+					EdgeFrom: c.EdgeFrom,
+					EdgeTo:   c.EdgeTo,
 				},
 			),
 			solution: core.NewSolution(),
@@ -406,9 +418,13 @@ func (m *MixedCBS) resolveCrossingConflict(inst *core.Instance, node *mixedCBSNo
 		t := c.Time + dt
 		if t >= 0 {
 			child1.constraints = append(child1.constraints, Constraint{
-				Robot:  mobileRobot,
-				Vertex: c.Vertex,
-				Time:   t,
+				Robot:    mobileRobot,
+				Vertex:   c.Vertex,
+				Time:     t,
+				EndTime:  c.EndTime + dt,
+				IsEdge:   c.IsEdge,
+				EdgeFrom: c.EdgeFrom,
+				EdgeTo:   c.EdgeTo,
 			})
 		}
 	}
@@ -419,9 +435,13 @@ func (m *MixedCBS) resolveCrossingConflict(inst *core.Instance, node *mixedCBSNo
 		constraints: append(
 			append([]Constraint{}, node.constraints...),
 			Constraint{
-				Robot:  railRobot,
-				Vertex: c.Vertex,
-				Time:   c.Time,
+				Robot:    railRobot,
+				Vertex:   c.Vertex,
+				Time:     c.Time,
+				EndTime:  c.EndTime,
+				IsEdge:   c.IsEdge,
+				EdgeFrom: c.EdgeFrom,
+				EdgeTo:   c.EdgeTo,
 			},
 		),
 		solution: core.NewSolution(),
@@ -458,9 +478,13 @@ func (m *MixedCBS) resolveAerialConflict(inst *core.Instance, node *mixedCBSNode
 				}
 				child1.solution.Assignment = node.solution.Assignment
 				child1.constraints = append(child1.constraints, Constraint{
-					Robot:  c.Robot1,
-					Vertex: c.Vertex,
-					Time:   c.Time,
+					Robot:    c.Robot1,
+					Vertex:   c.Vertex,
+					Time:     c.Time,
+					EndTime:  c.EndTime,
+					IsEdge:   c.IsEdge,
+					EdgeFrom: c.EdgeFrom,
+					EdgeTo:   c.EdgeTo,
 				})
 				children = append(children, child1)
 			}
@@ -473,9 +497,13 @@ func (m *MixedCBS) resolveAerialConflict(inst *core.Instance, node *mixedCBSNode
 			constraints: append(
 				append([]Constraint{}, node.constraints...),
 				Constraint{
-					Robot:  robotID,
-					Vertex: c.Vertex,
-					Time:   c.Time,
+					Robot:    robotID,
+					Vertex:   c.Vertex,
+					Time:     c.Time,
+					EndTime:  c.EndTime,
+					IsEdge:   c.IsEdge,
+					EdgeFrom: c.EdgeFrom,
+					EdgeTo:   c.EdgeTo,
 				},
 			),
 			solution: core.NewSolution(),
@@ -504,9 +532,13 @@ func (m *MixedCBS) resolveVerticalConflict(inst *core.Instance, node *mixedCBSNo
 	// Block Robot2 from corridor for transition duration (2 time units)
 	for dt := 0.0; dt <= 2.0; dt += 1.0 {
 		child1.constraints = append(child1.constraints, Constraint{
-			Robot:  c.Robot2,
-			Vertex: c.Vertex,
-			Time:   c.Time + dt,
+			Robot:    c.Robot2,
+			Vertex:   c.Vertex,
+			Time:     c.Time + dt,
+			EndTime:  c.EndTime + dt,
+			IsEdge:   c.IsEdge,
+			EdgeFrom: c.EdgeFrom,
+			EdgeTo:   c.EdgeTo,
 		})
 	}
 	children = append(children, child1)
@@ -519,9 +551,13 @@ func (m *MixedCBS) resolveVerticalConflict(inst *core.Instance, node *mixedCBSNo
 	child2.solution.Assignment = node.solution.Assignment
 	for dt := 0.0; dt <= 2.0; dt += 1.0 {
 		child2.constraints = append(child2.constraints, Constraint{
-			Robot:  c.Robot1,
-			Vertex: c.Vertex,
-			Time:   c.Time + dt,
+			Robot:    c.Robot1,
+			Vertex:   c.Vertex,
+			Time:     c.Time + dt,
+			EndTime:  c.EndTime + dt,
+			IsEdge:   c.IsEdge,
+			EdgeFrom: c.EdgeFrom,
+			EdgeTo:   c.EdgeTo,
 		})
 	}
 	children = append(children, child2)
@@ -562,9 +598,13 @@ func (m *MixedCBS) resolveAirGroundConflict(inst *core.Instance, node *mixedCBSN
 		t := c.Time + dt
 		if t >= 0 {
 			child1.constraints = append(child1.constraints, Constraint{
-				Robot:  droneRobot,
-				Vertex: c.Vertex,
-				Time:   t,
+				Robot:    droneRobot,
+				Vertex:   c.Vertex,
+				Time:     t,
+				EndTime:  c.EndTime + dt,
+				IsEdge:   c.IsEdge,
+				EdgeFrom: c.EdgeFrom,
+				EdgeTo:   c.EdgeTo,
 			})
 		}
 	}
@@ -575,9 +615,13 @@ func (m *MixedCBS) resolveAirGroundConflict(inst *core.Instance, node *mixedCBSN
 		constraints: append(
 			append([]Constraint{}, node.constraints...),
 			Constraint{
-				Robot:  groundRobot,
-				Vertex: c.Vertex,
-				Time:   c.Time,
+				Robot:    groundRobot,
+				Vertex:   c.Vertex,
+				Time:     c.Time,
+				EndTime:  c.EndTime,
+				IsEdge:   c.IsEdge,
+				EdgeFrom: c.EdgeFrom,
+				EdgeTo:   c.EdgeTo,
 			},
 		),
 		solution: core.NewSolution(),
@@ -640,15 +684,8 @@ func (m *MixedCBS) planAllPaths(inst *core.Instance, node *mixedCBSNode) bool {
 	node.solution.Schedule = make(core.Schedule)
 
 	for _, robot := range inst.Robots {
-		var goals []core.VertexID
-		for tid, rid := range node.solution.Assignment {
-			if rid == robot.ID {
-				task := inst.TaskByID(tid)
-				if task != nil {
-					goals = append(goals, task.Location)
-				}
-			}
-		}
+		// Collect goals with task info (includes duration) sorted by TaskID
+		goalsWithInfo := CollectGoalsWithInfo(node.solution.Assignment, robot.ID, inst)
 
 		var robotConstraints []Constraint
 		for _, con := range node.constraints {
@@ -657,22 +694,24 @@ func (m *MixedCBS) planAllPaths(inst *core.Instance, node *mixedCBSNode) bool {
 			}
 		}
 
-		path := SpaceTimeAStar(
+		// Plan path with task durations (adds wait segments for service time)
+		path := SpaceTimeAStarWithDurations(
 			inst.Workspace,
 			robot,
 			robot.Start,
-			goals,
+			goalsWithInfo,
 			robotConstraints,
 			m.MaxTime,
 		)
 
-		if path == nil && len(goals) > 0 {
+		if path == nil && len(goalsWithInfo) > 0 {
 			return false
 		}
 
 		node.solution.Paths[robot.ID] = path
 	}
 
+	PopulateSchedule(node.solution, inst)
 	node.solution.ComputeMakespan(inst)
 	return true
 }

@@ -50,8 +50,9 @@ func (h *astar3DHeap) Pop() any {
 	return x
 }
 
-// SpaceTimeAStar3D finds shortest path for drones in 3D layered airspace.
+// SpaceTimeAStar3D finds shortest path for drones through all goals in 3D layered airspace.
 // Considers energy constraints and vertical corridor transitions.
+// Uses sequential chaining: finds path to goals[0], then from goals[0] to goals[1], etc.
 func SpaceTimeAStar3D(
 	ws *core.Workspace,
 	airspace *core.Airspace,
@@ -65,15 +66,157 @@ func SpaceTimeAStar3D(
 		return nil
 	}
 
-	goal := goals[0]
+	var fullPath core.Path
+	currentStart := start
+	currentTime := 0.0
+	currentEnergy := robot.CurrentBattery
+	currentLayer := core.LayerGround // Start at ground
+
+	startVertex := ws.Vertices[start]
+	if startVertex != nil {
+		currentLayer = startVertex.Layer
+	}
+
+	for i, goal := range goals {
+		segment, endEnergy, endLayer := spaceTimeAStar3DSingle(
+			ws, airspace, robot, currentStart, goal,
+			constraints, maxTime, currentTime, currentEnergy, currentLayer,
+		)
+		if segment == nil {
+			return nil // Failed to reach this goal
+		}
+
+		if i == 0 {
+			fullPath = append(fullPath, segment...)
+		} else {
+			// Skip duplicate vertex at junction
+			fullPath = append(fullPath, segment[1:]...)
+		}
+
+		currentStart = goal
+		currentTime = segment[len(segment)-1].T
+		currentEnergy = endEnergy
+		currentLayer = endLayer
+	}
+
+	return fullPath
+}
+
+// SpaceTimeAStar3DWithDurations finds path through goals, adding wait segments for task durations.
+// Uses sequential chaining and accounts for hover energy during service time.
+func SpaceTimeAStar3DWithDurations(
+	ws *core.Workspace,
+	airspace *core.Airspace,
+	robot *core.Robot,
+	start core.VertexID,
+	goalsWithInfo []GoalWithTaskInfo,
+	constraints []Constraint,
+	maxTime float64,
+) core.Path {
+	if len(goalsWithInfo) == 0 {
+		return nil
+	}
+
+	var fullPath core.Path
+	currentStart := start
+	currentTime := 0.0
+	currentEnergy := robot.CurrentBattery
+	currentLayer := core.LayerGround
+
+	startVertex := ws.Vertices[start]
+	if startVertex != nil {
+		currentLayer = startVertex.Layer
+	}
+
+	for i, goalInfo := range goalsWithInfo {
+		segment, endEnergy, endLayer := spaceTimeAStar3DSingle(
+			ws, airspace, robot, currentStart, goalInfo.Vertex,
+			constraints, maxTime, currentTime, currentEnergy, currentLayer,
+		)
+		if segment == nil {
+			return nil
+		}
+
+		if i == 0 {
+			fullPath = append(fullPath, segment...)
+		} else {
+			fullPath = append(fullPath, segment[1:]...)
+		}
+
+		arrivalTime := segment[len(segment)-1].T
+
+		if goalInfo.Duration > 0 {
+			completionTime := arrivalTime + goalInfo.Duration
+
+			// Check if wait interval violates any vertex constraints.
+			waitViolated := false
+			for _, c := range constraints {
+				if c.Robot != robot.ID || c.IsEdge {
+					continue
+				}
+				if c.Vertex == goalInfo.Vertex {
+					constraintEnd := c.EndTime
+					if constraintEnd <= c.Time {
+						constraintEnd = c.Time + TimeTolerance
+					}
+					if arrivalTime < constraintEnd+TimeTolerance && c.Time < completionTime+TimeTolerance {
+						waitViolated = true
+						break
+					}
+				}
+			}
+			if waitViolated {
+				return nil
+			}
+
+			// Account for hover energy during service time.
+			if robot.IsDrone() {
+				waitEnergy := robot.EnergyForTime(goalInfo.Duration, core.ActionHover)
+				endEnergy -= waitEnergy
+				if endEnergy <= 0 {
+					return nil
+				}
+			}
+
+			fullPath = append(fullPath, core.TimedVertex{
+				V: goalInfo.Vertex,
+				T: completionTime,
+			})
+			currentTime = completionTime
+		} else {
+			currentTime = arrivalTime
+		}
+
+		currentStart = goalInfo.Vertex
+		currentEnergy = endEnergy
+		currentLayer = endLayer
+	}
+
+	return fullPath
+}
+
+// spaceTimeAStar3DSingle finds shortest path to a single goal in 3D.
+// Returns path, remaining energy, and ending layer.
+func spaceTimeAStar3DSingle(
+	ws *core.Workspace,
+	airspace *core.Airspace,
+	robot *core.Robot,
+	start core.VertexID,
+	goal core.VertexID,
+	constraints []Constraint,
+	maxTime float64,
+	startTime float64,
+	startEnergy float64,
+	startLayer core.AirspaceLayer,
+) (core.Path, float64, core.AirspaceLayer) {
 	goalVertex := ws.Vertices[goal]
 	if goalVertex == nil {
-		return nil
+		return nil, 0, startLayer
 	}
 
 	startVertex := ws.Vertices[start]
 	if startVertex == nil {
-		return nil
+		return nil, 0, startLayer
 	}
 
 	// 3D Euclidean heuristic with energy penalty
@@ -116,11 +259,41 @@ func SpaceTimeAStar3D(
 		return baseH
 	}
 
-	// Check if state violates constraints
-	violates := func(v core.VertexID, t float64) bool {
+	// Check if state violates constraints (vertex and edge)
+	// For edge constraints, check interval overlap: movement [tStart, tEnd] vs constraint [c.Time, c.EndTime]
+	violates := func(fromV, toV core.VertexID, tStart, tEnd float64) bool {
 		for _, c := range constraints {
-			if c.Robot == robot.ID && c.Vertex == v && c.Time == t {
-				return true
+			if c.Robot != robot.ID {
+				continue
+			}
+			// Vertex constraint: robot cannot be at vertex at specific time or interval.
+			if !c.IsEdge && c.Vertex == toV {
+				constraintEnd := c.EndTime
+				if constraintEnd <= c.Time {
+					constraintEnd = c.Time
+				}
+				if fromV == toV {
+					// Waiting: check interval overlap
+					if tStart < constraintEnd+TimeTolerance && c.Time < tEnd+TimeTolerance {
+						return true
+					}
+				} else if timeEqual(c.Time, tEnd) {
+					// Moving: only occupy target at arrival
+					return true
+				}
+			}
+			// Edge constraint (swap conflict): check interval overlap
+			if c.IsEdge && c.EdgeFrom == fromV && c.EdgeTo == toV {
+				// Use EndTime if set, otherwise fall back to Time
+				constraintEnd := c.EndTime
+				if constraintEnd <= c.Time {
+					constraintEnd = c.Time + TimeTolerance
+				}
+				// Intervals [tStart, tEnd] and [c.Time, constraintEnd] overlap if:
+				// tStart < constraintEnd AND c.Time < tEnd
+				if tStart < constraintEnd+TimeTolerance && c.Time < tEnd+TimeTolerance {
+					return true
+				}
 			}
 		}
 		return false
@@ -130,16 +303,16 @@ func SpaceTimeAStar3D(
 	open := &astar3DHeap{}
 	heap.Init(open)
 
-	initialEnergy := robot.CurrentBattery
+	startState := SpaceTimeState3D{
+		V:     start,
+		T:     startTime,
+		Layer: startLayer,
+	}
 	startNode := &astar3DNode{
-		state: SpaceTimeState3D{
-			V:     start,
-			T:     0,
-			Layer: startVertex.Layer,
-		},
+		state:  startState,
 		g:      0,
-		f:      heuristic(SpaceTimeState3D{V: start, T: 0, Layer: startVertex.Layer}),
-		energy: initialEnergy,
+		f:      heuristic(startState),
+		energy: startEnergy,
 	}
 	heap.Push(open, startNode)
 
@@ -150,7 +323,7 @@ func SpaceTimeAStar3D(
 
 		// Goal check
 		if current.state.V == goal {
-			return reconstructPath3D(current)
+			return reconstructPath3D(current), current.energy, current.state.Layer
 		}
 
 		if visited[current.state] {
@@ -167,24 +340,24 @@ func SpaceTimeAStar3D(
 			continue
 		}
 
-		nextT := current.state.T + 1.0
-
 		// === Action 1: Hover (wait in place) ===
-		if !violates(current.state.V, nextT) {
-			hoverEnergy := robot.EnergyForDistance(0, core.ActionHover) * 1.0 // 1 second hover
+		hoverDuration := 1.0 // 1 second hover
+		hoverT := current.state.T + hoverDuration
+		if !violates(current.state.V, current.state.V, current.state.T, hoverT) {
+			hoverEnergy := robot.EnergyForTime(hoverDuration, core.ActionHover)
 			newEnergy := current.energy - hoverEnergy
 
 			if !robot.IsDrone() || newEnergy > 0 {
 				hoverState := SpaceTimeState3D{
 					V:     current.state.V,
-					T:     nextT,
+					T:     hoverT,
 					Layer: current.state.Layer,
 				}
 				if !visited[hoverState] {
 					node := &astar3DNode{
 						state:  hoverState,
-						g:      current.g + 0.1,
-						f:      current.g + 0.1 + energyHeuristic(hoverState, newEnergy),
+						g:      current.g + hoverDuration,
+						f:      current.g + hoverDuration + energyHeuristic(hoverState, newEnergy),
 						energy: newEnergy,
 						parent: current,
 					}
@@ -215,22 +388,21 @@ func SpaceTimeAStar3D(
 				continue
 			}
 
-			if violates(neighbor, nextT) {
+			// Get edge and calculate travel time
+			edge := ws.GetEdge(current.state.V, neighbor)
+			if edge == nil {
+				continue
+			}
+			travelTime := edge.TravelTime(robot)
+			moveT := current.state.T + travelTime
+			edgeDist := edge.Distance() // For energy calculation
+
+			if violates(current.state.V, neighbor, current.state.T, moveT) {
 				continue
 			}
 
-			// Calculate edge cost and energy
-			edgeCost := 1.0
-			for _, e := range ws.Edges[current.state.V] {
-				if e.To == neighbor {
-					edgeCost = e.Cost
-					break
-				}
-			}
-
 			// Energy for horizontal movement
-			dist := edgeCost // Assuming edge cost ~ distance
-			moveEnergy := robot.EnergyForDistance(dist, core.ActionMoveHorizontal)
+			moveEnergy := robot.EnergyForDistance(edgeDist, core.ActionMoveHorizontal)
 			newEnergy := current.energy - moveEnergy
 
 			if robot.IsDrone() && newEnergy <= 0 {
@@ -239,7 +411,7 @@ func SpaceTimeAStar3D(
 
 			moveState := SpaceTimeState3D{
 				V:     neighbor,
-				T:     nextT,
+				T:     moveT,
 				Layer: current.state.Layer,
 			}
 			if visited[moveState] {
@@ -248,8 +420,8 @@ func SpaceTimeAStar3D(
 
 			node := &astar3DNode{
 				state:  moveState,
-				g:      current.g + edgeCost,
-				f:      current.g + edgeCost + energyHeuristic(moveState, newEnergy),
+				g:      current.g + travelTime,
+				f:      current.g + travelTime + energyHeuristic(moveState, newEnergy),
 				energy: newEnergy,
 				parent: current,
 			}
@@ -261,25 +433,31 @@ func SpaceTimeAStar3D(
 		if robot.IsDrone() {
 			currentVertex := ws.Vertices[current.state.V]
 			if currentVertex != nil && currentVertex.IsCorridor && airspace != nil {
+				climbSpeed := 2.0 // m/s vertical
+
 				// Try climbing
 				upperLayer := core.NextLayerUp(current.state.Layer)
 				if upperLayer != current.state.Layer {
 					upperVertex := airspace.GetVertexAtLayer(current.state.V, upperLayer)
-					if upperVertex != 0 && !violates(upperVertex, nextT+1) {
+					heightDiff := upperLayer.Height() - current.state.Layer.Height()
+					climbTime := heightDiff / climbSpeed
+					climbT := current.state.T + climbTime
+
+					if upperVertex != 0 && !violates(current.state.V, upperVertex, current.state.T, climbT) {
 						climbEnergy := robot.EnergyForLayerChange(current.state.Layer, upperLayer)
 						newEnergy := current.energy - climbEnergy
 
 						if newEnergy > 0 {
 							climbState := SpaceTimeState3D{
 								V:     upperVertex,
-								T:     nextT + 1, // Climbing takes extra time
+								T:     climbT,
 								Layer: upperLayer,
 							}
 							if !visited[climbState] {
 								node := &astar3DNode{
 									state:       climbState,
-									g:           current.g + 2.0, // Layer change cost
-									f:           current.g + 2.0 + energyHeuristic(climbState, newEnergy),
+									g:           current.g + climbTime,
+									f:           current.g + climbTime + energyHeuristic(climbState, newEnergy),
 									energy:      newEnergy,
 									parent:      current,
 									layerChange: true,
@@ -294,21 +472,25 @@ func SpaceTimeAStar3D(
 				lowerLayer := core.NextLayerDown(current.state.Layer)
 				if lowerLayer != current.state.Layer {
 					lowerVertex := airspace.GetVertexAtLayer(current.state.V, lowerLayer)
-					if lowerVertex != 0 && !violates(lowerVertex, nextT) {
+					heightDiff := current.state.Layer.Height() - lowerLayer.Height()
+					descendTime := heightDiff / climbSpeed
+					descendT := current.state.T + descendTime
+
+					if lowerVertex != 0 && !violates(current.state.V, lowerVertex, current.state.T, descendT) {
 						descendEnergy := robot.EnergyForLayerChange(current.state.Layer, lowerLayer)
 						newEnergy := current.energy - descendEnergy
 
 						if newEnergy > 0 {
 							descendState := SpaceTimeState3D{
 								V:     lowerVertex,
-								T:     nextT,
+								T:     descendT,
 								Layer: lowerLayer,
 							}
 							if !visited[descendState] {
 								node := &astar3DNode{
 									state:       descendState,
-									g:           current.g + 1.0, // Descending is faster
-									f:           current.g + 1.0 + energyHeuristic(descendState, newEnergy),
+									g:           current.g + descendTime,
+									f:           current.g + descendTime + energyHeuristic(descendState, newEnergy),
 									energy:      newEnergy,
 									parent:      current,
 									layerChange: true,
@@ -326,16 +508,18 @@ func SpaceTimeAStar3D(
 			currentVertex := ws.Vertices[current.state.V]
 			if currentVertex != nil && currentVertex.IsPad && current.state.Layer == core.LayerGround {
 				// Recharge to full - takes 10 time units
+				rechargeDuration := 10.0
+				rechargeT := current.state.T + rechargeDuration
 				rechargeState := SpaceTimeState3D{
 					V:     current.state.V,
-					T:     current.state.T + 10.0,
+					T:     rechargeT,
 					Layer: core.LayerGround,
 				}
-				if !visited[rechargeState] && !violates(current.state.V, rechargeState.T) {
+				if !visited[rechargeState] && !violates(current.state.V, current.state.V, current.state.T, rechargeT) {
 					node := &astar3DNode{
 						state:  rechargeState,
-						g:      current.g + 10.0,
-						f:      current.g + 10.0 + energyHeuristic(rechargeState, robot.BatteryCapacity),
+						g:      current.g + rechargeDuration,
+						f:      current.g + rechargeDuration + energyHeuristic(rechargeState, robot.BatteryCapacity),
 						energy: robot.BatteryCapacity,
 						parent: current,
 					}
@@ -345,7 +529,7 @@ func SpaceTimeAStar3D(
 		}
 	}
 
-	return nil // No path found
+	return nil, 0, startLayer // No path found
 }
 
 // reconstructPath3D builds path from A* result.
@@ -363,4 +547,11 @@ func euclideanDist3D(p1, p2 core.Pos) float64 {
 	dy := p1.Y - p2.Y
 	dz := p1.Z - p2.Z
 	return math.Sqrt(dx*dx + dy*dy + dz*dz)
+}
+
+// euclideanDist2D computes 2D Euclidean distance (X, Y only, ignoring Z).
+func euclideanDist2D(p1, p2 core.Pos) float64 {
+	dx := p1.X - p2.X
+	dy := p1.Y - p2.Y
+	return math.Sqrt(dx*dx + dy*dy)
 }

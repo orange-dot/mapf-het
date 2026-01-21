@@ -400,15 +400,8 @@ func (d *DeadlineCBS) planAllPaths(inst *core.Instance, node *deadlineCBSNode) b
 	node.solution.Schedule = make(core.Schedule)
 
 	for _, robot := range inst.Robots {
-		var goals []core.VertexID
-		for tid, rid := range node.solution.Assignment {
-			if rid == robot.ID {
-				task := inst.TaskByID(tid)
-				if task != nil {
-					goals = append(goals, task.Location)
-				}
-			}
-		}
+		// Collect goals with task info (includes duration) sorted by TaskID
+		goalsWithInfo := CollectGoalsWithInfo(node.solution.Assignment, robot.ID, inst)
 
 		var robotConstraints []Constraint
 		for _, con := range node.constraints {
@@ -417,22 +410,23 @@ func (d *DeadlineCBS) planAllPaths(inst *core.Instance, node *deadlineCBSNode) b
 			}
 		}
 
-		path := SpaceTimeAStar(
+		path := SpaceTimeAStarWithDurations(
 			inst.Workspace,
 			robot,
 			robot.Start,
-			goals,
+			goalsWithInfo,
 			robotConstraints,
 			d.MaxTime,
 		)
 
-		if path == nil && len(goals) > 0 {
+		if path == nil && len(goalsWithInfo) > 0 {
 			return false
 		}
 
 		node.solution.Paths[robot.ID] = path
 	}
 
+	PopulateSchedule(node.solution, inst)
 	node.solution.ComputeMakespan(inst)
 	return true
 }

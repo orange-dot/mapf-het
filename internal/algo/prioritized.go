@@ -38,28 +38,20 @@ func (p *Prioritized) Solve(inst *core.Instance) *core.Solution {
 	var allConstraints []Constraint
 
 	for _, robot := range priority {
-		// Collect tasks for this robot
-		var goals []core.VertexID
-		for tid, rid := range assignment {
-			if rid == robot.ID {
-				task := inst.TaskByID(tid)
-				if task != nil {
-					goals = append(goals, task.Location)
-				}
-			}
-		}
+		// Collect goals with task info (includes duration) sorted by TaskID
+		goalsWithInfo := CollectGoalsWithInfo(assignment, robot.ID, inst)
 
-		// Plan path avoiding previously planned robots
-		path := SpaceTimeAStar(
+		// Plan path with task durations (adds wait segments for service time)
+		path := SpaceTimeAStarWithDurations(
 			inst.Workspace,
 			robot,
 			robot.Start,
-			goals,
+			goalsWithInfo,
 			allConstraints,
 			p.MaxTime,
 		)
 
-		if path == nil && len(goals) > 0 {
+		if path == nil && len(goalsWithInfo) > 0 {
 			return nil // Failed to find path
 		}
 
@@ -80,6 +72,7 @@ func (p *Prioritized) Solve(inst *core.Instance) *core.Solution {
 		}
 	}
 
+	PopulateSchedule(solution, inst)
 	solution.ComputeMakespan(inst)
 	solution.Feasible = true
 	return solution

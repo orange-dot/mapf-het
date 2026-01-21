@@ -162,38 +162,74 @@ func (e *EnergyCBS) checkEnergyFeasibility(inst *core.Instance, node *energyCBSN
 }
 
 // simulateEnergy simulates battery consumption along path.
+// Uses edge distances from workspace for consistency with path planning.
 func (e *EnergyCBS) simulateEnergy(inst *core.Instance, robot *core.Robot, path core.Path) *EnergyViolation {
 	energy := robot.CurrentBattery
 
 	for i := 1; i < len(path); i++ {
-		prev := inst.Workspace.Vertices[path[i-1].V]
-		curr := inst.Workspace.Vertices[path[i].V]
+		prevV := path[i-1].V
+		currV := path[i].V
+
+		prev := inst.Workspace.Vertices[prevV]
+		curr := inst.Workspace.Vertices[currV]
 
 		if prev == nil || curr == nil {
 			continue
 		}
 
-		// Calculate energy for this segment
-		dist := euclideanDist3D(prev.Pos, curr.Pos)
+		// Calculate distance using edge data for consistency with planner.
+		// Fall back to Euclidean for wait segments or missing edges.
+		var dist float64
+		if prevV == currV {
+			// Wait segment - calculate hover time
+			hoverTime := path[i].T - path[i-1].T
+			consumption := robot.EnergyForTime(hoverTime, core.ActionHover)
+			energy -= consumption
 
-		// Determine action type
-		var action core.MoveAction
-		if prev.Layer != curr.Layer {
-			if curr.Layer > prev.Layer {
-				action = core.ActionClimb
-			} else {
-				action = core.ActionDescend
+			// Check if at charging pad - recharge
+			if curr.IsPad && curr.Layer == core.LayerGround {
+				energy = robot.BatteryCapacity
 			}
-		} else if dist < 0.01 {
-			action = core.ActionHover
-		} else {
-			action = core.ActionMoveHorizontal
+
+			if energy <= 0 {
+				return &EnergyViolation{
+					Robot:      robot,
+					DepletedAt: path[i].T,
+					Position:   path[i].V,
+				}
+			}
+			continue
 		}
 
-		// Calculate consumption
-		consumption := robot.EnergyForDistance(dist, action)
+		// Calculate energy consumption separating horizontal and vertical components
+		// to avoid double-counting vertical energy.
+		var consumption float64
+
 		if prev.Layer != curr.Layer {
+			// Layer change: calculate horizontal and vertical energy separately
+			// Horizontal distance (2D)
+			horizontalDist := euclideanDist2D(prev.Pos, curr.Pos)
+			if horizontalDist > 0.01 {
+				consumption += robot.EnergyForDistance(horizontalDist, core.ActionMoveHorizontal)
+			}
+			// Vertical energy uses dedicated layer change calculation with climb speed
 			consumption += robot.EnergyForLayerChange(prev.Layer, curr.Layer)
+		} else {
+			// Same layer: use edge distance or 2D Euclidean
+			edge := inst.Workspace.GetEdge(prevV, currV)
+			if edge != nil && edge.Distance() > 0 {
+				dist = edge.Distance()
+			} else {
+				dist = euclideanDist2D(prev.Pos, curr.Pos)
+			}
+
+			if dist < 0.01 {
+				// Effectively hovering at same position
+				hoverTime := path[i].T - path[i-1].T
+				consumption = robot.EnergyForTime(hoverTime, core.ActionHover)
+			} else {
+				consumption = robot.EnergyForDistance(dist, core.ActionMoveHorizontal)
+			}
 		}
 
 		energy -= consumption
@@ -287,9 +323,13 @@ func (e *EnergyCBS) resolveConflict(node *energyCBSNode, c *Conflict) []*energyC
 			constraints: append(
 				append([]Constraint{}, node.constraints...),
 				Constraint{
-					Robot:  robotID,
-					Vertex: c.Vertex,
-					Time:   c.Time,
+					Robot:    robotID,
+					Vertex:   c.Vertex,
+					Time:     c.Time,
+					EndTime:  c.EndTime,
+					IsEdge:   c.IsEdge,
+					EdgeFrom: c.EdgeFrom,
+					EdgeTo:   c.EdgeTo,
 				},
 			),
 			energyConstraints: append([]EnergyConstraint{}, node.energyConstraints...),
@@ -351,24 +391,22 @@ func (e *EnergyCBS) planAllPaths(inst *core.Instance, node *energyCBSNode) bool 
 	node.solution.Schedule = make(core.Schedule)
 
 	for _, robot := range inst.Robots {
-		var goals []core.VertexID
-
-		// Add task goals
-		for tid, rid := range node.solution.Assignment {
-			if rid == robot.ID {
-				task := inst.TaskByID(tid)
-				if task != nil {
-					goals = append(goals, task.Location)
-				}
-			}
-		}
+		// Collect goals with task info (includes duration) sorted by TaskID
+		goalsWithInfo := CollectGoalsWithInfo(node.solution.Assignment, robot.ID, inst)
 
 		// For drones, check energy constraints and add charging waypoints
+		// Charging waypoints don't have task durations
 		if robot.Type == core.TypeC {
 			for _, ec := range node.energyConstraints {
 				if ec.Robot == robot.ID {
-					// Insert charging pad as intermediate goal
-					goals = append([]core.VertexID{ec.Pad}, goals...)
+					// Insert charging pad as intermediate goal (before task goals)
+					// Charging has no task duration - it's handled by energy simulation
+					chargingGoal := GoalWithTaskInfo{
+						TaskID:   0, // No task ID for charging waypoint
+						Vertex:   ec.Pad,
+						Duration: 0, // Charging time handled elsewhere
+					}
+					goalsWithInfo = append([]GoalWithTaskInfo{chargingGoal}, goalsWithInfo...)
 				}
 			}
 		}
@@ -382,35 +420,123 @@ func (e *EnergyCBS) planAllPaths(inst *core.Instance, node *energyCBSNode) bool 
 
 		var path core.Path
 		if robot.Type == core.TypeC && e.Airspace != nil {
-			// Use 3D A* for drones
-			path = SpaceTimeAStar3D(
+			// Use 3D A* with durations for drones
+			path = SpaceTimeAStar3DWithDurations(
 				inst.Workspace,
 				e.Airspace,
 				robot,
 				robot.Start,
-				goals,
+				goalsWithInfo,
 				robotConstraints,
 				e.MaxTime,
 			)
 		} else {
-			// Use standard A* for ground robots
-			path = SpaceTimeAStar(
+			// Use standard A* with durations for ground robots
+			path = SpaceTimeAStarWithDurations(
 				inst.Workspace,
 				robot,
 				robot.Start,
-				goals,
+				goalsWithInfo,
 				robotConstraints,
 				e.MaxTime,
 			)
 		}
 
-		if path == nil && len(goals) > 0 {
+		if path == nil && len(goalsWithInfo) > 0 {
 			return false
+		}
+
+		// Verify MustReachBy energy constraints are satisfied
+		if robot.Type == core.TypeC {
+			for _, ec := range node.energyConstraints {
+				if ec.Robot == robot.ID {
+					if !verifyMustReachBy(path, ec) {
+						return false // Constraint not satisfied
+					}
+				}
+			}
 		}
 
 		node.solution.Paths[robot.ID] = path
 	}
 
+	PopulateSchedule(node.solution, inst)
 	node.solution.ComputeMakespan(inst)
 	return true
+}
+
+// verifyMustReachBy checks if a path reaches the charging pad by the deadline.
+func verifyMustReachBy(path core.Path, ec EnergyConstraint) bool {
+	if path == nil {
+		return false
+	}
+	for _, tv := range path {
+		if tv.V == ec.Pad && tv.T <= ec.MustReachBy+TimeTolerance {
+			return true
+		}
+	}
+	return false // Pad not reached in time
+}
+
+// addWaitSegmentsForDurations adds wait segments for task service times to a path.
+// Also validates that wait intervals don't violate constraints.
+// Returns nil if a constraint is violated during a wait interval.
+func addWaitSegmentsForDurations(path core.Path, goalsWithInfo []GoalWithTaskInfo, constraints []Constraint, robot *core.Robot) core.Path {
+	if len(path) == 0 || len(goalsWithInfo) == 0 {
+		return path
+	}
+
+	// Build a map from goal vertex to duration
+	goalDurations := make(map[core.VertexID]float64)
+	for _, g := range goalsWithInfo {
+		if g.Duration > 0 {
+			goalDurations[g.Vertex] = g.Duration
+		}
+	}
+
+	var newPath core.Path
+	for i, tv := range path {
+		newPath = append(newPath, tv)
+
+		// Check if this is a goal vertex with duration
+		duration, isGoal := goalDurations[tv.V]
+		if !isGoal || duration <= 0 {
+			continue
+		}
+
+		// Don't add wait if next vertex is at same location (already a wait)
+		if i+1 < len(path) && path[i+1].V == tv.V {
+			continue
+		}
+
+		completionTime := tv.T + duration
+
+		// Check if wait interval violates any vertex constraints
+		for _, c := range constraints {
+			if c.Robot != robot.ID || c.IsEdge {
+				continue
+			}
+			if c.Vertex == tv.V {
+				constraintEnd := c.EndTime
+				if constraintEnd <= c.Time {
+					constraintEnd = c.Time + TimeTolerance
+				}
+				// Wait interval [tv.T, completionTime] overlaps constraint [c.Time, constraintEnd]
+				if tv.T < constraintEnd+TimeTolerance && c.Time < completionTime+TimeTolerance {
+					return nil // Constraint violated during wait
+				}
+			}
+		}
+
+		// Add wait segment
+		newPath = append(newPath, core.TimedVertex{
+			V: tv.V,
+			T: completionTime,
+		})
+
+		// Remove this goal from map so we don't add duplicate waits
+		delete(goalDurations, tv.V)
+	}
+
+	return newPath
 }

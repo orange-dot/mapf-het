@@ -92,9 +92,13 @@ func (c *CBS) Solve(inst *core.Instance) *core.Solution {
 				constraints: append(
 					append([]Constraint{}, node.constraints...),
 					Constraint{
-						Robot:  robotID,
-						Vertex: conflict.Vertex,
-						Time:   conflict.Time,
+						Robot:    robotID,
+						Vertex:   conflict.Vertex,
+						Time:     conflict.Time,
+						EndTime:  conflict.EndTime,
+						IsEdge:   conflict.IsEdge,
+						EdgeFrom: conflict.EdgeFrom,
+						EdgeTo:   conflict.EdgeTo,
 					},
 				),
 				solution: core.NewSolution(),
@@ -139,16 +143,8 @@ func (c *CBS) planAllPaths(inst *core.Instance, node *cbsNode) bool {
 	node.solution.Schedule = make(core.Schedule)
 
 	for _, robot := range inst.Robots {
-		// Collect tasks for this robot
-		var goals []core.VertexID
-		for tid, rid := range node.solution.Assignment {
-			if rid == robot.ID {
-				task := inst.TaskByID(tid)
-				if task != nil {
-					goals = append(goals, task.Location)
-				}
-			}
-		}
+		// Collect goals with task info (includes duration) sorted by TaskID
+		goalsWithInfo := CollectGoalsWithInfo(node.solution.Assignment, robot.ID, inst)
 
 		// Filter constraints for this robot
 		var robotConstraints []Constraint
@@ -158,23 +154,24 @@ func (c *CBS) planAllPaths(inst *core.Instance, node *cbsNode) bool {
 			}
 		}
 
-		// Plan path
-		path := SpaceTimeAStar(
+		// Plan path with task durations (adds wait segments for service time)
+		path := SpaceTimeAStarWithDurations(
 			inst.Workspace,
 			robot,
 			robot.Start,
-			goals,
+			goalsWithInfo,
 			robotConstraints,
 			c.MaxTime,
 		)
 
-		if path == nil && len(goals) > 0 {
+		if path == nil && len(goalsWithInfo) > 0 {
 			return false
 		}
 
 		node.solution.Paths[robot.ID] = path
 	}
 
+	PopulateSchedule(node.solution, inst)
 	node.solution.ComputeMakespan(inst)
 	return true
 }
