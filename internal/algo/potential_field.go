@@ -17,6 +17,10 @@ type PotentialField struct {
 	PowerTrajectory map[core.VertexID]float64
 	// RepulsiveField: robot avoidance gradients
 	RepulsiveField map[core.VertexID]float64
+	// SlackGradient: deadline slack from EK-KOR2 modules (MAPF-HET Section V.F)
+	// Higher values = more slack = lower priority
+	// Negative gradient indicates neighbor needs help
+	SlackGradient map[core.VertexID]float64
 }
 
 // NewPotentialField creates an empty potential field.
@@ -26,6 +30,7 @@ func NewPotentialField() *PotentialField {
 		ThermalGradient: make(map[core.VertexID]float64),
 		PowerTrajectory: make(map[core.VertexID]float64),
 		RepulsiveField:  make(map[core.VertexID]float64),
+		SlackGradient:   make(map[core.VertexID]float64),
 	}
 }
 
