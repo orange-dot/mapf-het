@@ -1,5 +1,5 @@
-Formal Specification of Novel Algorithmic Approaches in the MAPF-HET System
-Document: Formal Specification of Novel Algorithmic Approaches Version: 1.0 Date: 2026-01-21
+MAPF-HET System: Algorithm Specifications and Prior Art Context
+Document: Algorithm Specifications with Prior Art References Version: 1.0 Date: 2026-01-21
 
 Table of Contents
 Introduction and Motivation 2.(#2-mixed-dimensional-mapf-md-mapf) 3.(#3-dimensional-conflict-decomposition) 4.(#4-energy-constrained-cbs-e-cbs)
@@ -33,14 +33,14 @@ Type C (Drones): UAVs introduce a 3D component (v≈15.0 m/s), navigating a volu
 
 Standard MAPF solvers, including Conflict-Based Search (CBS) and Priority-Based Search (PBS), struggle to model these disparate interactions efficiently. A collision between two rail robots on a single track segment implies a blockage that requires one agent to retreat significantly, a resolution strategy vastly different from a momentary pause required for two crossing drones. Furthermore, standard algorithms typically assume exogenous task generation; they do not inherently account for the endogenous generation of maintenance tasks, such as charging, which are critical for the sustained operation of energy-constrained agents like drones.
 
-1.2 Contributions
-To address these challenges, this report formally specifies four major algorithmic contributions implemented within the MAPF-HET system:
+1.2 System Components
+This document specifies four main algorithms implemented within the MAPF-HET system:
 
 MD-MAPF Formalization: We provide a rigorous mathematical definition of the Mixed-Dimensional MAPF problem. This includes the introduction of agent dimensionality functions κ and vertex compatibility masks δ, extending standard graph-based definitions to support topometric maps where different agents perceive different connectivities.
 
-Dimensional Conflict Decomposition: We introduce a novel taxonomy of conflict types based on the dimensionality of the interacting agents. By classifying conflicts into categories such as Linear, Planar, and Vertical, we can apply specialized resolution strategies within the CBS framework. This decomposition exploits the specific geometric constraints of each conflict type (e.g., the "locking" nature of rail conflicts) to prune the search tree more effectively than generic geometric collision detection.
+Dimensional Conflict Decomposition: A taxonomy of conflict types based on the dimensionality of the interacting agents. By classifying conflicts into categories such as Linear, Planar, and Vertical, we can apply specialized resolution strategies within the CBS framework. This decomposition exploits the specific geometric constraints of each conflict type (e.g., the "locking" nature of rail conflicts) to prune the search tree more effectively than generic geometric collision detection.
 
-Energy-Constrained CBS (E-CBS): We extend the low-level solver of CBS to include a continuous energy variable. A key contribution here is the Endogenous Task Generation mechanism, where the solver automatically inserts waypoints to charging stations when an agent’s projected energy drops below a safety threshold. This transforms the problem from simple pathfinding to a combined routing and scheduling problem with resource constraints.
+Energy-Constrained CBS (E-CBS): Extension of the CBS low-level solver to include a continuous energy variable. The Endogenous Task Generation mechanism automatically inserts waypoints to charging stations when an agent's projected energy drops below a safety threshold. This transforms the problem from simple pathfinding to a combined routing and scheduling problem with resource constraints.
 
 Layered Airspace Model: To manage the complexity of 3D pathfinding, we formalize a discrete layered airspace model. This segregates traffic by altitude and restricts vertical transitions to designated "corridors," effectively reducing the 3D planning problem into a series of 2D layer assignments coupled with vertical synchronization constraints.
 
@@ -632,14 +632,12 @@ a
 Invariant 7.3 (Dimensional Consistency). An agent effectively exists only within its compatible manifold.
 
 ∀a∈A,∀t:κ(a)∈δ(position(a,t))
-8. Conclusion
-This report has formalized the algorithmic foundations of the MAPF-HET system, a comprehensive planning architecture designed for the coordination of mixed-dimensional heterogeneous fleets. By rigorously defining the MD-MAPF problem, we have extended the scope of Multi-Agent Path Finding beyond homogeneous grids to complex, multi-manifold environments representative of modern industry (e.g., ports, multi-modal warehouses).
+8. Summary
+This document specifies the algorithms used in the MAPF-HET system for coordinating mixed-dimensional heterogeneous fleets. The MD-MAPF problem definition extends Multi-Agent Path Finding to multi-manifold environments.
 
-The Dimensional Conflict Decomposition transforms the challenge of heterogeneity into an algorithmic advantage. By classifying conflicts into six distinct types (e.g., Linear, Vertical, Cross-Dimensional), we enable the use of specialized, efficient resolution strategies that significantly prune the CBS search tree compared to generic solvers.
+The Dimensional Conflict Decomposition classifies conflicts into six types (Linear, Vertical, Cross-Dimensional, etc.) with specialized resolution strategies for the CBS search tree.
 
-The E-CBS algorithm introduces a necessary layer of realism by treating energy as a hard constraint and enabling the endogenous generation of charging tasks. This ensures that generated plans are not just collision-free but mission-feasible. The Layered Airspace model and Hybrid Planning architecture further enhance robustness, providing structured mechanisms to handle 3D complexity and real-world execution noise, respectively.
-
-Collectively, these contributions provide a theoretically sound and practically viable framework for the next generation of large-scale, heterogeneous autonomous systems.
+The E-CBS algorithm treats energy as a hard constraint with automatic insertion of charging tasks. The Layered Airspace model and Hybrid Planning architecture handle 3D complexity and execution deviations.
 
 Implementation References
 Core Solvers: internal/algo/mixed_cbs.go (MIXED-CBS), internal/algo/energy_cbs.go (E-CBS).
