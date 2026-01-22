@@ -1,6 +1,6 @@
-# Algorithmic Contributions in the MAPF-HET System
+# MAPF-HET Algorithm Specifications
 
-**Document:** Formal Specification of Novel Algorithmic Approaches
+**Document:** Formal Specification of MAPF-HET Algorithms
 **Version:** 1.0
 **Date:** 2026-01-21
 
@@ -33,9 +33,9 @@ Consider a robotic battery swap station for electric buses. In such a system, th
 
 Standard MAPF algorithms cannot efficiently model interactions between agents of different dimensionalities.
 
-### 1.2 Contributions
+### 1.2 System Components
 
-This work introduces the following novel concepts:
+The MAPF-HET system consists of:
 
 1. **MD-MAPF Formalization** — Extension of the MAPF problem to heterogeneous agents with mixed dimensionality
 2. **Dimensional Conflict Decomposition** — Classification and resolution of conflicts according to dimensional interaction
@@ -526,19 +526,17 @@ if dev(a, t) > threshold:
 
 ---
 
-## 8. Conclusion
+## 8. Summary
 
-This document formalizes four key algorithmic contributions in the MAPF-HET system:
+This document specifies the four main algorithms in the MAPF-HET system:
 
-1. **MD-MAPF** — A novel formulation of the MAPF problem with heterogeneous agents of different dimensionalities
+1. **MD-MAPF** — MAPF formulation for heterogeneous agents of different dimensionalities
 
-2. **Dimensional Conflict Decomposition** — A taxonomy of six conflict classes with specific resolution strategies that exploits problem structure for more efficient search
+2. **Dimensional Conflict Decomposition** — Taxonomy of six conflict classes with specific resolution strategies
 
-3. **E-CBS** — An extension of the CBS algorithm with energy constraints and automatic charging station insertion that guarantees energy validity of all paths
+3. **E-CBS** — CBS extension with energy constraints and automatic charging station insertion
 
-4. **Layered Airspace** — Discretization of 3D space into layers with corridors for vertical transitions, simplifying conflict detection for drones
-
-These contributions enable efficient planning in real-world heterogeneous robotic systems where agents with fundamentally different kinematic properties coexist.
+4. **Layered Airspace** — Discretization of 3D space into layers with corridors for vertical transitions
 
 ---
 
