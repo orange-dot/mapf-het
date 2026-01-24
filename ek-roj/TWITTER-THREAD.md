@@ -43,7 +43,3 @@ Target application is modular EV charging coordination. N modules agree on power
 Related work: Raft, PBFT, CRDTs
 
 #DistributedSystems #Consensus #EmbeddedSystems #Rust #Golang #IoT
-
----
-
-
