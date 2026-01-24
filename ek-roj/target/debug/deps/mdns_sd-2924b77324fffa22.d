@@ -1,0 +1,10 @@
+D:\work\autobusi-punjaci\mapf-het-research\ek-roj\target\debug\deps\mdns_sd-2924b77324fffa22.d: C:\Users\bojan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\mdns-sd-0.11.5\src\lib.rs C:\Users\bojan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\mdns-sd-0.11.5\src\dns_cache.rs C:\Users\bojan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\mdns-sd-0.11.5\src\dns_parser.rs C:\Users\bojan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\mdns-sd-0.11.5\src\error.rs C:\Users\bojan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\mdns-sd-0.11.5\src\service_daemon.rs C:\Users\bojan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\mdns-sd-0.11.5\src\service_info.rs
+
+D:\work\autobusi-punjaci\mapf-het-research\ek-roj\target\debug\deps\libmdns_sd-2924b77324fffa22.rmeta: C:\Users\bojan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\mdns-sd-0.11.5\src\lib.rs C:\Users\bojan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\mdns-sd-0.11.5\src\dns_cache.rs C:\Users\bojan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\mdns-sd-0.11.5\src\dns_parser.rs C:\Users\bojan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\mdns-sd-0.11.5\src\error.rs C:\Users\bojan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\mdns-sd-0.11.5\src\service_daemon.rs C:\Users\bojan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\mdns-sd-0.11.5\src\service_info.rs
+
+C:\Users\bojan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\mdns-sd-0.11.5\src\lib.rs:
+C:\Users\bojan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\mdns-sd-0.11.5\src\dns_cache.rs:
+C:\Users\bojan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\mdns-sd-0.11.5\src\dns_parser.rs:
+C:\Users\bojan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\mdns-sd-0.11.5\src\error.rs:
+C:\Users\bojan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\mdns-sd-0.11.5\src\service_daemon.rs:
+C:\Users\bojan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\mdns-sd-0.11.5\src\service_info.rs:
