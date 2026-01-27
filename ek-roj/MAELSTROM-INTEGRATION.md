@@ -1,22 +1,42 @@
 # Maelstrom Integration for ROJ Consensus
 
-This document describes the Maelstrom distributed systems testing integration for ROJ consensus. Maelstrom complements the existing [Elle/Jepsen integration](./ELLE-INTEGRATION.md) with lightweight, in-process testing using standardized workloads.
+This document describes the Maelstrom distributed systems testing integration for ROJ consensus.
 
 ## Overview
 
-### Why Maelstrom in Addition to Elle?
+### What is Maelstrom?
 
-| Tool | Best For | Checks |
-|------|----------|--------|
-| **Elle** | Transactional consistency | G0, G1a/b/c, G2, lost updates |
-| **Maelstrom** | Message-level correctness | Linearizability, broadcast, total order |
-| **TLA+** | Formal verification | Safety invariants, liveness |
+[Maelstrom](https://github.com/jepsen-io/maelstrom) is a workbench for learning distributed systems by writing your own. It's a **Clojure/JVM application** that:
 
-Maelstrom provides:
-- **Faster iteration** - No JVM startup for basic tests
-- **Different failure models** - Message loss/delay vs transactional anomalies
-- **Community benchmarks** - Fly.io Gossip Glomers comparisons
-- **Standardized workloads** - Echo, broadcast, lin-kv, etc.
+1. Spawns your nodes as child processes
+2. Simulates a network between them (with configurable faults)
+3. Generates workload-specific operations (echo, broadcast, transactions, etc.)
+4. Records a history of all operations and results
+5. Uses **checker libraries** to verify correctness properties
+
+Maelstrom is built on [Jepsen](https://jepsen.io/) and uses its checker ecosystem:
+- **[Knossos](https://github.com/jepsen-io/knossos)** - Verifies linearizability (single-object consistency)
+- **[Elle](https://github.com/jepsen-io/elle)** - Verifies transactional isolation (G0, G1, G2, etc.)
+
+### Why Use Maelstrom for ROJ?
+
+| Benefit | Description |
+|---------|-------------|
+| **Standardized workloads** | Echo, broadcast, g-counter, lin-kv, txn-list-append |
+| **Network fault injection** | Message loss, delay, partitions |
+| **Community benchmarks** | Compare against [Fly.io Gossip Glomers](https://fly.io/dist-sys/) solutions |
+| **Rigorous checking** | Jepsen's checkers find subtle consistency bugs |
+
+### Tool Comparison
+
+| Tool | Role | What It Does |
+|------|------|--------------|
+| **Maelstrom** | Test harness | Orchestrates nodes, simulates network, generates workloads |
+| **Knossos** | Checker (used by Maelstrom) | Verifies linearizability of single-object histories |
+| **Elle** | Checker (used by Maelstrom/Jepsen) | Verifies transactional isolation via cycle detection |
+| **TLA+** | Formal specification | Proves safety/liveness properties mathematically |
+
+Note: Maelstrom requires **Java 11+** to run. Your nodes (written in Go, Rust, etc.) communicate with the Maelstrom harness via JSON over stdin/stdout.
 
 ## Architecture
 
@@ -136,7 +156,7 @@ This matches the test vectors in `ek-kor2/spec/test-vectors/consensus_002_vote_a
 ### Prerequisites
 
 - Go 1.21+
-- Java 11+ (for Maelstrom checker)
+- Java 11+ (Maelstrom is a Clojure/JVM application)
 - [Maelstrom v0.2.4+](https://github.com/jepsen-io/maelstrom/releases)
 
 ### Building
@@ -228,7 +248,7 @@ github.com/jepsen-io/maelstrom/demo/go v0.0.0-20251128144731-cb7f07239012
 
 ### External
 
-- Java 11+ runtime (for Maelstrom checker)
+- Java 11+ runtime (Maelstrom is a Clojure/JVM application)
 - Maelstrom binary (EPL-1.0 license)
 
 ## Platform Notes
