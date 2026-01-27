@@ -228,6 +228,7 @@ func (d *DeadlineCBS) checkDeadlineFeasibility(inst *core.Instance, node *deadli
 }
 
 // computeSlacks calculates slack for each robot-task pair.
+// Uses per-task deadlines when available, otherwise global deadline.
 func (d *DeadlineCBS) computeSlacks(inst *core.Instance, node *deadlineCBSNode) []SlackInfo {
 	var slacks []SlackInfo
 
@@ -239,16 +240,18 @@ func (d *DeadlineCBS) computeSlacks(inst *core.Instance, node *deadlineCBSNode) 
 
 		pathEndTime := path[len(path)-1].T
 
-		// Add task durations
-		var totalTaskTime float64
+		// Compute slack for each task assigned to this robot
+		var cumulativeTime float64
 		for tid, rid := range node.solution.Assignment {
 			if rid == robot.ID {
 				task := inst.TaskByID(tid)
 				if task != nil {
-					totalTaskTime += task.Duration
+					cumulativeTime += task.Duration
 
-					earliestCompletion := pathEndTime + totalTaskTime
-					slack := d.Deadline - earliestCompletion
+					// Use per-task deadline if available, otherwise global
+					taskDeadline := task.GetDeadline(d.Deadline)
+					earliestCompletion := pathEndTime + cumulativeTime
+					slack := taskDeadline - earliestCompletion
 
 					slacks = append(slacks, SlackInfo{
 						Robot:    robot.ID,

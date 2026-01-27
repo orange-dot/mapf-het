@@ -791,8 +791,10 @@ name = "roj-core"
 version = "0.1.0"
 dependencies = [
  "mdns-sd",
+ "rand",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
  "tracing",

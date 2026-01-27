@@ -196,6 +196,27 @@ func robotRepulsionRadius(t core.RobotType) float64 {
 	}
 }
 
+// SetSlackGradient sets the slack gradient from external source (e.g., FieldBridge).
+// This enables field-guided planning based on EK-KOR2 module state.
+func (f *PotentialField) SetSlackGradient(gradients map[core.VertexID]float64) {
+	for vid, gradient := range gradients {
+		f.SlackGradient[vid] = gradient
+	}
+}
+
+// GetSlackGradient returns the slack gradient at a vertex.
+func (f *PotentialField) GetSlackGradient(v core.VertexID) float64 {
+	if g, ok := f.SlackGradient[v]; ok {
+		return g
+	}
+	return 0
+}
+
+// SetSlackGradient sets slack gradient for PotentialField3D.
+func (f *PotentialField3D) SetSlackGradient(gradients map[core.VertexID]float64) {
+	f.PotentialField.SetSlackGradient(gradients)
+}
+
 // normalizeField scales values to [0, 1] range.
 func normalizeField(m map[core.VertexID]float64) {
 	if len(m) == 0 {
