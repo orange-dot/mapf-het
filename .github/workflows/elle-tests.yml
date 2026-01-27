@@ -1,0 +1,152 @@
+name: Elle Consistency Tests
+
+on:
+  push:
+    branches: [main, ek-roj-dev]
+    paths:
+      - 'ek-roj/**'
+      - '.github/workflows/elle-tests.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'ek-roj/**'
+  schedule:
+    # Nightly at 3 AM UTC
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  ELLE_CLI_VERSION: '0.1.7'
+
+jobs:
+  elle-tests:
+    name: Run Elle Consistency Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+        with:
+          components: clippy
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            ek-roj/target/
+          key: ${{ runner.os }}-cargo-elle-${{ hashFiles('ek-roj/**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-elle-
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Cache elle-cli JAR
+        id: cache-elle
+        uses: actions/cache@v4
+        with:
+          path: ~/.elle-cli/elle-cli.jar
+          key: elle-cli-${{ env.ELLE_CLI_VERSION }}
+
+      - name: Download elle-cli
+        if: steps.cache-elle.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/.elle-cli
+          curl -L -o ~/.elle-cli/elle-cli.jar \
+            "https://github.com/ligurio/elle-cli/releases/download/${ELLE_CLI_VERSION}/elle-cli-${ELLE_CLI_VERSION}-standalone.jar"
+
+      - name: Verify elle-cli
+        run: |
+          java -jar ~/.elle-cli/elle-cli.jar --help
+
+      - name: Build harness
+        working-directory: ek-roj
+        run: |
+          cargo build --release -p roj-elle-harness
+
+      - name: Run Elle test suite
+        working-directory: ek-roj
+        run: |
+          mkdir -p results
+          ./target/release/roj-elle suite \
+            --output-dir ./results \
+            --junit-xml ./results/junit.xml \
+            --elle-jar ~/.elle-cli/elle-cli.jar
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: elle-test-results
+          path: |
+            ek-roj/results/
+          retention-days: 30
+
+      - name: Publish JUnit report
+        if: always()
+        uses: mikepenz/action-junit-report@v4
+        with:
+          report_paths: 'ek-roj/results/junit.xml'
+          fail_on_failure: true
+          check_name: 'Elle Consistency Tests'
+
+  # Additional job for checking elle feature compilation
+  compile-check:
+    name: Check Elle Feature Compilation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            ek-roj/target/
+          key: ${{ runner.os }}-cargo-check-${{ hashFiles('ek-roj/**/Cargo.lock') }}
+
+      - name: Check roj-core with elle feature
+        working-directory: ek-roj
+        run: |
+          cargo check -p roj-core --features elle
+
+      - name: Check roj-core without elle feature
+        working-directory: ek-roj
+        run: |
+          cargo check -p roj-core
+
+      - name: Run tests with elle feature
+        working-directory: ek-roj
+        run: |
+          cargo test -p roj-core --features elle
+          cargo test -p roj-elle-harness
+
+      - name: Clippy checks
+        working-directory: ek-roj
+        run: |
+          cargo clippy -p roj-core --features elle -- -D warnings
+          cargo clippy -p roj-elle-harness -- -D warnings

@@ -5,6 +5,7 @@ members = [
     "roj-node-rs",
     "roj-adapter-ocpp",
     "roj-ocpp-node",
+    "roj-elle-harness",
 ]
 
 [workspace.package]
@@ -25,3 +26,6 @@ clap = { version = "4", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
 futures-util = "0.3"
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+parking_lot = "0.12"
+rand = "0.8"
+tempfile = "3"

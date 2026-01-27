@@ -17,6 +17,11 @@ use std::collections::HashMap;
 use std::time::Instant;
 use tracing::{debug, info, warn};
 
+#[cfg(feature = "elle")]
+use std::sync::Arc;
+#[cfg(feature = "elle")]
+use crate::history::{HistoryRecorder, ElleOp, key_to_numeric, value_to_numeric};
+
 /// Maximum entries per AppendEntries batch
 pub const MAX_BATCH_SIZE: usize = 8;
 
@@ -213,6 +218,12 @@ pub struct ReplicatedLog {
     snapshot: Option<Snapshot>,
     /// Callback when entry is committed
     on_commit: Option<Box<dyn Fn(&LogEntry) + Send + Sync>>,
+    /// Elle history recorder (feature-gated)
+    #[cfg(feature = "elle")]
+    history: Option<Arc<HistoryRecorder>>,
+    /// Mapping from log index to Elle invoke index
+    #[cfg(feature = "elle")]
+    pending_invokes: HashMap<u64, u64>,
 }
 
 impl ReplicatedLog {
@@ -228,7 +239,23 @@ impl ReplicatedLog {
             followers: HashMap::new(),
             snapshot: None,
             on_commit: None,
+            #[cfg(feature = "elle")]
+            history: None,
+            #[cfg(feature = "elle")]
+            pending_invokes: HashMap::new(),
         }
+    }
+
+    /// Set Elle history recorder
+    #[cfg(feature = "elle")]
+    pub fn set_history(&mut self, history: Arc<HistoryRecorder>) {
+        self.history = Some(history);
+    }
+
+    /// Get Elle history recorder
+    #[cfg(feature = "elle")]
+    pub fn history(&self) -> Option<&Arc<HistoryRecorder>> {
+        self.history.as_ref()
     }
 
     /// Set commit callback
@@ -296,8 +323,18 @@ impl ReplicatedLog {
     /// Append a new entry (leader only)
     pub fn append(&mut self, key: String, value: serde_json::Value) -> LogEntry {
         let index = self.last_index() + 1;
-        let entry = LogEntry::new_data(index, self.current_term, key, value);
+        let entry = LogEntry::new_data(index, self.current_term, key.clone(), value.clone());
         self.entries.push(entry.clone());
+
+        // Elle: Record invoke event for this append operation
+        #[cfg(feature = "elle")]
+        if let Some(ref history) = self.history {
+            let elle_key = key_to_numeric(&key);
+            let elle_value = value_to_numeric(&value);
+            let invoke_idx = history.invoke(vec![ElleOp::append(elle_key, elle_value)]);
+            self.pending_invokes.insert(index, invoke_idx);
+        }
+
         debug!("Log: Appended entry {} (term {})", index, self.current_term);
         entry
     }
@@ -524,6 +561,28 @@ impl ReplicatedLog {
                 if entry.entry_type == EntryType::Data && !entry.key.is_empty() {
                     self.state.insert(entry.key.clone(), entry.value.clone());
                     info!("Log: Applied {}={}", entry.key, entry.value);
+
+                    // Elle: Record ok event for this applied operation
+                    #[cfg(feature = "elle")]
+                    if let Some(ref history) = self.history {
+                        if let Some(invoke_idx) = self.pending_invokes.remove(&entry.index) {
+                            let elle_key = key_to_numeric(&entry.key);
+                            let elle_value = value_to_numeric(&entry.value);
+                            // Include read result showing current state for the key
+                            let current_values: Vec<i64> = self
+                                .state
+                                .get(&entry.key)
+                                .map(|v| vec![value_to_numeric(v)])
+                                .unwrap_or_default();
+                            history.ok(
+                                invoke_idx,
+                                vec![
+                                    ElleOp::append(elle_key, elle_value),
+                                    ElleOp::read(elle_key, Some(current_values)),
+                                ],
+                            );
+                        }
+                    }
                 }
                 if let Some(ref callback) = self.on_commit {
                     callback(&entry);

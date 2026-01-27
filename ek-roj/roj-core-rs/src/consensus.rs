@@ -8,6 +8,9 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+#[cfg(feature = "elle")]
+use crate::history::{HistoryRecorder, ElleOp, key_to_numeric, value_to_numeric};
+
 /// Vote threshold as fraction (2/3 majority)
 const VOTE_THRESHOLD: f64 = 2.0 / 3.0;
 
@@ -23,6 +26,12 @@ pub struct Consensus {
     state: HashMap<String, serde_json::Value>,
     /// Reference to discovered peers
     peers: Arc<RwLock<HashMap<NodeId, PeerInfo>>>,
+    /// Elle history recorder (feature-gated)
+    #[cfg(feature = "elle")]
+    history: Option<Arc<HistoryRecorder>>,
+    /// Mapping from proposal_id to Elle invoke index
+    #[cfg(feature = "elle")]
+    pending_invokes: HashMap<String, u64>,
 }
 
 impl Consensus {
@@ -33,7 +42,23 @@ impl Consensus {
             proposals: HashMap::new(),
             state: HashMap::new(),
             peers,
+            #[cfg(feature = "elle")]
+            history: None,
+            #[cfg(feature = "elle")]
+            pending_invokes: HashMap::new(),
         }
+    }
+
+    /// Set Elle history recorder
+    #[cfg(feature = "elle")]
+    pub fn set_history(&mut self, history: Arc<HistoryRecorder>) {
+        self.history = Some(history);
+    }
+
+    /// Get Elle history recorder
+    #[cfg(feature = "elle")]
+    pub fn history(&self) -> Option<&Arc<HistoryRecorder>> {
+        self.history.as_ref()
     }
 
     /// Get the current committed state
@@ -53,6 +78,15 @@ impl Consensus {
             timestamp,
         );
         self.proposals.insert(proposal_id.clone(), state);
+
+        // Elle: Record invoke event for this append operation
+        #[cfg(feature = "elle")]
+        if let Some(ref history) = self.history {
+            let elle_key = key_to_numeric(&key);
+            let elle_value = value_to_numeric(&value);
+            let invoke_idx = history.invoke(vec![ElleOp::append(elle_key, elle_value)]);
+            self.pending_invokes.insert(proposal_id.clone(), invoke_idx);
+        }
 
         info!(
             "Consensus: Proposing {}={} (id={})",
@@ -144,6 +178,16 @@ impl Consensus {
             self.state.insert(key.clone(), value.clone());
             info!("Consensus: COMMIT {}={}", key, value);
 
+            // Elle: Record ok event for this committed operation
+            #[cfg(feature = "elle")]
+            if let Some(ref history) = self.history {
+                if let Some(invoke_idx) = self.pending_invokes.remove(&proposal_id) {
+                    let elle_key = key_to_numeric(&key);
+                    let elle_value = value_to_numeric(&value);
+                    history.ok(invoke_idx, vec![ElleOp::append(elle_key, elle_value)]);
+                }
+            }
+
             // Remove completed proposal
             self.proposals.remove(&proposal_id);
 
@@ -190,6 +234,15 @@ impl Consensus {
 
         for id in expired {
             warn!("Consensus: Proposal {} expired", id);
+
+            // Elle: Record fail event for expired proposals
+            #[cfg(feature = "elle")]
+            if let Some(ref history) = self.history {
+                if let Some(invoke_idx) = self.pending_invokes.remove(&id) {
+                    history.fail(invoke_idx);
+                }
+            }
+
             self.proposals.remove(&id);
         }
     }
